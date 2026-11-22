@@ -68,7 +68,7 @@ function sharedBackendTargetHost(host: string | undefined): string {
 }
 
 export const DEFAULT_T3_HOME = Effect.map(Effect.service(Path.Path), (path) =>
-  path.join(NodeOS.homedir(), ".t3"),
+  path.join(NodeOS.homedir(), ".t3-red"),
 );
 
 const MODE_ARGS = {
@@ -330,9 +330,10 @@ export const createDevRunnerEnv = Effect.fn("dev-runner.createDevRunnerEnv")(fun
   };
 
   const path = yield* Path.Path;
-  // The server stores an explicit home's state in userdata, which for ~/.t3 is the live
-  // install. Left implicit, dev state goes to ~/.t3/dev.
-  const isLiveHome = resolvedBaseDir === path.join(yield* HostProcess.HomeDirectory, ".t3");
+  // The server stores an explicit home's state in userdata, which for ~/.t3 and ~/.t3-red is a
+  // live install. Left implicit, dev state goes to ~/.t3-red/dev.
+  const home = yield* HostProcess.HomeDirectory;
+  const isLiveHome = [".t3", ".t3-red"].some((name) => resolvedBaseDir === path.join(home, name));
   if (configuredBaseDir !== undefined && !isLiveHome) {
     output.T3CODE_HOME = resolvedBaseDir;
   } else {

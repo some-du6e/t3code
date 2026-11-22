@@ -17,6 +17,7 @@ import { Command, Flag } from "effect/cli";
 
 import * as ProjectionStore from "../src/orchestration-v2/ProjectionStore.ts";
 import { rebuildMessageSearch } from "../src/orchestration-v2/messageSearchIndex.ts";
+import { resolveBaseDir } from "../src/os-jank.ts";
 import { runMigrations } from "../src/persistence/Migrations.ts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 
@@ -34,7 +35,7 @@ export class MigrateDevDbSharedHomeError extends Schema.TaggedError<MigrateDevDb
   {},
 ) {
   override get message(): string {
-    return "Refusing to rebuild the shared ~/.t3 database. Use an isolated --base-dir.";
+    return "Refusing to rebuild the shared ~/.t3 or ~/.t3-red database. Use an isolated --base-dir.";
   }
 }
 
@@ -511,11 +512,13 @@ export const runMigrateDevDb = Effect.fn("runMigrateDevDb")(function* (
   if (!(yield* fs.exists(sourcePath))) {
     return yield* new MigrateDevDbSourceMissingError({ sourcePath });
   }
-  const [canonicalBaseDir, canonicalSharedHome] = yield* Effect.all([
+  const defaultHome = yield* resolveBaseDir(undefined);
+  const [canonicalBaseDir, canonicalSharedHome, canonicalDefaultHome] = yield* Effect.all([
     fs.realPath(baseDir).pipe(Effect.orElseSucceed(() => baseDir)),
     fs.realPath(sharedHome).pipe(Effect.orElseSucceed(() => sharedHome)),
+    fs.realPath(defaultHome).pipe(Effect.orElseSucceed(() => defaultHome)),
   ]);
-  if (canonicalBaseDir === canonicalSharedHome) {
+  if (canonicalBaseDir === canonicalSharedHome || canonicalBaseDir === canonicalDefaultHome) {
     return yield* new MigrateDevDbSharedHomeError();
   }
   // Both destination and snapshot are deleted below; reject sources resolving to either.

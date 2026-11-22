@@ -6,6 +6,7 @@ import * as Path from "effect/Path";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { runMigrations } from "../src/persistence/Migrations.ts";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import { runMigrateDevDb } from "./migrate-dev-db.ts";
 
@@ -570,6 +571,24 @@ it.layer(NodeServices.layer)("migrate-dev-db", (it) => {
         { sharedHome: sourceDir },
       ).pipe(Effect.flip);
       assert.equal(error._tag, "MigrateDevDbSharedHomeError");
+    }),
+  );
+
+  it.effect("refuses to rebuild the server's default home", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const sourceDir = yield* fs.makeTempDirectoryScoped({ prefix: "migrate-dev-db-src-" });
+      const homeDir = yield* fs.makeTempDirectoryScoped({ prefix: "migrate-dev-db-home-" });
+      const source = yield* createFixtureSource(sourceDir);
+      const baseDir = path.join(homeDir, ".t3-red");
+
+      const error = yield* runMigrateDevDb(
+        { baseDir, source, projects: 5, threadsPerProject: 10 },
+        { sharedHome: sourceDir },
+      ).pipe(Effect.provideService(HostProcess.HomeDirectory, homeDir), Effect.flip);
+      assert.equal(error._tag, "MigrateDevDbSharedHomeError");
+      assert.equal(yield* fs.exists(baseDir), false);
     }),
   );
 });

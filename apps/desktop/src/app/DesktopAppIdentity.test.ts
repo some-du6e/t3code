@@ -148,25 +148,25 @@ const withIdentity = <A, E, R>(
 };
 
 describe("DesktopAppIdentity", () => {
-  it.effect("isolates the V2 profile even when the legacy V1 profile exists", () =>
+  it.effect("isolates its profile even when the legacy V1 profile exists", () =>
     withIdentity(
       Effect.gen(function* () {
         const identity = yield* DesktopAppIdentity.DesktopAppIdentity;
         const userDataPath = yield* identity.resolveUserDataPath;
 
-        assert.equal(userDataPath, "/Users/alice/Library/Application Support/t3code-v2");
+        assert.equal(userDataPath, "/Users/alice/Library/Application Support/t3-code-red");
       }),
       { legacyPathExists: true },
     ),
   );
 
-  it.effect("keeps using the legacy development profile", () =>
+  it.effect("ignores the official development profile", () =>
     withIdentity(
       Effect.gen(function* () {
         const identity = yield* DesktopAppIdentity.DesktopAppIdentity;
         assert.equal(
           yield* identity.resolveUserDataPath,
-          "/Users/alice/Library/Application Support/T3 Code (Dev)",
+          "/Users/alice/Library/Application Support/t3-code-red-dev",
         );
       }),
       {
@@ -177,16 +177,18 @@ describe("DesktopAppIdentity", () => {
   );
 
   it.effect.each([
-    { stage: "Beta", environment: {} },
+    { stage: "Beta", about: "T3 Code Red", environment: {} },
     {
       stage: "Nightly",
+      about: "T3 Code Red (Nightly)",
       environment: { appVersion: "0.0.43-nightly.20260929.2428" },
     },
     {
       stage: "Dev",
+      about: "T3 Code Red (Dev)",
       environment: { env: { VITE_DEV_SERVER_URL: "http://localhost:5173" } },
     },
-  ])("uses a valid native User-Agent product name for $stage", ({ stage, environment }) => {
+  ])("uses a valid native User-Agent product name for $stage", ({ stage, about, environment }) => {
     const calls: ElectronAppCalls = {
       setAboutPanelOptions: [],
       setDockIcon: [],
@@ -200,9 +202,9 @@ describe("DesktopAppIdentity", () => {
 
         const runtimeName = calls.setName[0];
         assert.isDefined(runtimeName);
-        assert.equal(runtimeName, `T3 Code ${stage}`);
+        assert.equal(runtimeName, `T3 Code Red ${stage}`);
         assert.match(runtimeName.replaceAll(" ", ""), /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/);
-        assert.equal(calls.setAboutPanelOptions[0]?.applicationName, `T3 Code (${stage})`);
+        assert.equal(calls.setAboutPanelOptions[0]?.applicationName, about);
       }),
       { calls, environment },
     );

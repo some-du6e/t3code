@@ -162,10 +162,10 @@ export const repointLaunchers = Effect.fn("cloud.service_launcher_client.repoint
       environment["T3CODE_INSTALL_BIN_DIR"] ||
       (environment["HOME"] ? path.join(environment["HOME"], ".local", "bin") : undefined);
     const candidates = new Set<string>();
-    if (installBinDir !== undefined) candidates.add(path.join(installBinDir, "t3"));
+    if (installBinDir !== undefined) candidates.add(path.join(installBinDir, "t3red"));
     for (const directory of (environment["PATH"] ?? "").split(":")) {
       if (directory.length === 0) continue;
-      const candidate = path.join(directory, "t3");
+      const candidate = path.join(directory, "t3red");
       if (
         yield* fs.exists(candidate).pipe(
           Effect.catch((cause) =>

@@ -17,6 +17,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Stream from "effect/Stream";
+import * as CliError from "effect/cli/CliError";
 import * as ChildProcess from "effect/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- the shared login shell probe runs synchronously through execFileSync.
@@ -250,9 +251,17 @@ export const expandHomePath = Effect.fn(function* (input: string) {
 });
 
 export const resolveBaseDir = Effect.fn(function* (raw: string | undefined) {
-  const { join, resolve } = yield* Path.Path;
+  const { join, relative, resolve } = yield* Path.Path;
+  const home = yield* HostProcess.HomeDirectory;
   if (!raw || raw.trim().length === 0) {
-    return join(yield* HostProcess.HomeDirectory, ".t3");
+    return join(home, ".t3-red");
   }
-  return resolve(yield* expandHomePath(raw.trim()));
+  const baseDir = resolve(yield* expandHomePath(raw.trim()));
+  // Agents of the official T3 Code service inherit its T3CODE_HOME.
+  if (relative(home, baseDir) === ".t3") {
+    return yield* new CliError.UserError({
+      cause: `T3 Code Red never uses ${baseDir}, the official T3 Code's home. Unset T3CODE_HOME, which the official app's agents inherit, to use ${join(home, ".t3-red")}, or pick another folder with --base-dir.`,
+    });
+  }
+  return baseDir;
 });

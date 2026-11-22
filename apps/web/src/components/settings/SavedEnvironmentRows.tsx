@@ -173,7 +173,7 @@ export function SavedBackendListRow({
       toastManager.add({
         type: "success",
         title: gt("MCP URL copied"),
-        description: gt("Add it to an agent, e.g. claude mcp add --transport http t3 {url}", {
+        description: gt("Add it to an agent, e.g. claude mcp add --transport http t3red {url}", {
           url,
         }),
       });

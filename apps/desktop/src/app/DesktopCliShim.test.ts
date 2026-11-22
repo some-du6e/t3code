@@ -167,7 +167,7 @@ describe("renderCliShim", () => {
     expect(closedStdin.status).toBe(3);
   });
 
-  it("keeps the install's T3 home under sudo, unless one is set", () => {
+  it("keeps the install's T3 home under sudo and over an inherited one", () => {
     const root = tempRoot();
     writeExecutable(NodePath.join(root, "app"), REPORTER);
     const shim = writeShim(root, {
@@ -176,7 +176,7 @@ describe("renderCliShim", () => {
       entry: "/bin.mjs",
     });
     expect(run(shim, []).stdout).toContain(`home=${root}/home`);
-    expect(run(shim, [], { T3CODE_HOME: "/elsewhere" }).stdout).toContain("home=/elsewhere");
+    expect(run(shim, [], { T3CODE_HOME: "/elsewhere" }).stdout).toContain(`home=${root}/home`);
     const relative = NodeChildProcess.spawnSync("./bin/t3", [], { cwd: root, encoding: "utf8" });
     expect(relative.stdout).toContain(`cli=${shim}`);
   });
@@ -202,8 +202,8 @@ describe("renderCliShim", () => {
     const executable = "C:\\Apps\\R&whoami&X 100%\\!CHANNEL!\\T3 Code.exe";
     const script = renderCliShim({
       target: { kind: "windows", executable, entry: "C:\\Apps\\server.asar\\bin.mjs" },
-      shimPath: "C:\\Users\\José\\.t3\\bin\\t3.cmd",
-      t3Home: "C:\\Users\\José\\.t3",
+      shimPath: "C:\\Users\\José\\.t3-red\\bin\\t3red.cmd",
+      t3Home: "C:\\Users\\José\\.t3-red",
     });
     const lines = script.split("\r\n");
     expect(lines).toContain("setlocal EnableExtensions DisableDelayedExpansion");
@@ -215,6 +215,7 @@ describe("renderCliShim", () => {
       (line) => line.includes("whoami") && !/"[^"]*whoami[^"]*"/.test(line),
     );
     expect(bare).toEqual([]);
-    expect(lines).toContain('set "T3CODE_CLI_PATH=C:\\Users\\José\\.t3\\bin\\t3.cmd"');
+    expect(lines).toContain('set "T3CODE_CLI_PATH=C:\\Users\\José\\.t3-red\\bin\\t3red.cmd"');
+    expect(lines).toContain('set "T3CODE_HOME=C:\\Users\\José\\.t3-red"');
   });
 });

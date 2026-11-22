@@ -1018,6 +1018,36 @@ it.layer(NodeServices.layer)("AgentSessionScanner", (it) => {
       }),
     );
 
+    it.effect("excludes folders inside ~/.t3 when the T3 home is elsewhere", () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const claudeHomePath = yield* makeTempDir("t3code-claude-home-");
+        const codexHomePath = yield* makeTempDir("t3code-codex-home-");
+        const homeDir = yield* makeTempDir("t3code-home-");
+        const workspace = path.join(homeDir, "code", "app");
+
+        for (const [index, cwd] of [
+          path.join(homeDir, ".t3", "scratch", "chat"),
+          path.join(homeDir, ".t3", "projects", "app"),
+          workspace,
+        ].entries()) {
+          yield* fileSystem.makeDirectory(cwd, { recursive: true });
+          yield* writeTranscript({
+            filePath: path.join(claudeHomePath, "projects", `-slug-${index}`, "session.jsonl"),
+            contents: claudeSessionLine(cwd),
+            mtimeMs: Date.parse("2026-01-01T00:00:00.000Z") + index,
+          });
+        }
+
+        const result = yield* runScan({ claudeHomePath, codexHomePath }).pipe(
+          Effect.provideService(HostProcess.HomeDirectory, homeDir),
+        );
+
+        expect(result.candidates.map((candidate) => candidate.path)).toEqual([workspace]);
+      }),
+    );
+
     it.effect("excludes T3-managed worktree sandboxes", () =>
       Effect.gen(function* () {
         const path = yield* Path.Path;

@@ -15,6 +15,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { Argument, Command, Flag } from "effect/cli";
 
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
+import { resolveBaseDir } from "../src/os-jank.ts";
 
 export const SqliteStateOperation = Schema.Literals(["query", "exec"]);
 export type SqliteStateOperation = typeof SqliteStateOperation.Type;
@@ -62,7 +63,7 @@ export class SqliteStateSharedHomeMutationError extends Schema.TaggedError<Sqlit
   {},
 ) {
   override get message(): string {
-    return "Refusing to mutate the shared ~/.t3 database. Use an isolated --base-dir.";
+    return "Refusing to mutate the shared ~/.t3 or ~/.t3-red database. Use an isolated --base-dir.";
   }
 }
 
@@ -189,11 +190,13 @@ export const runSqliteState = Effect.fn("runSqliteState")(function* (
     return yield* new SqliteStateDatabaseMissingError({ databasePath });
   }
   if (input.operation === "exec") {
-    const [canonicalBaseDir, canonicalSharedHome] = yield* Effect.all([
+    const defaultHome = yield* resolveBaseDir(undefined);
+    const [canonicalBaseDir, canonicalSharedHome, canonicalDefaultHome] = yield* Effect.all([
       fs.realPath(baseDir),
       fs.realPath(sharedHome).pipe(Effect.orElseSucceed(() => sharedHome)),
+      fs.realPath(defaultHome).pipe(Effect.orElseSucceed(() => defaultHome)),
     ]);
-    if (canonicalBaseDir === canonicalSharedHome) {
+    if (canonicalBaseDir === canonicalSharedHome || canonicalBaseDir === canonicalDefaultHome) {
       return yield* new SqliteStateSharedHomeMutationError();
     }
   }

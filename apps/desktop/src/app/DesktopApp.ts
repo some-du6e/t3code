@@ -46,7 +46,7 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import { msg } from "gt-i18n";
 import { m } from "../i18n/messages.ts";
 
-const DEFAULT_DESKTOP_BACKEND_PORT = 3773;
+const DEFAULT_DESKTOP_BACKEND_PORT = 4773;
 const MAX_TCP_PORT = 65_535;
 const DESKTOP_BACKEND_PORT_PROBE_HOSTS = ["127.0.0.1", "0.0.0.0", "::"] as const;
 

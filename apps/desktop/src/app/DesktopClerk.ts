@@ -85,7 +85,8 @@ export const desktopClerkFrontendApiHostname = resolveDesktopClerkFrontendApiHos
     : __T3CODE_BUILD_CLERK_PUBLISHABLE_KEY__,
 );
 
-function createDesktopClerkBridge(stateDir: string, isDevelopment: boolean, userDataPath: string) {
+// No renderer option: with one, Clerk makes this app the OS t3code: handler on every launch.
+function createDesktopClerkBridge(stateDir: string, userDataPath: string) {
   return createClerkBridge({
     storage: openClerkTokenStorage(
       stateDir,
@@ -94,10 +95,6 @@ function createDesktopClerkBridge(stateDir: string, isDevelopment: boolean, user
     ),
     manageSingleInstanceLock: false,
     passkeys: true,
-    renderer: {
-      scheme: ElectronProtocol.getDesktopScheme(isDevelopment),
-      host: ElectronProtocol.DESKTOP_HOST,
-    },
   });
 }
 
@@ -107,7 +104,7 @@ export const make = Effect.gen(function* () {
   const electronApp = yield* ElectronApp.ElectronApp;
   const shell = yield* ElectronShell.ElectronShell;
 
-  // Must not yield: the bridge registers a scheme Electron rejects once ready.
+  // Must not yield: userData must be set before Chromium's first event-loop turn.
   const userDataPath = yield* DesktopUserData.resolveUserDataPath(environment);
   yield* electronApp.setPath("userData", userDataPath);
 
@@ -141,8 +138,7 @@ export const make = Effect.gen(function* () {
 
   yield* Effect.acquireRelease(
     Effect.try({
-      try: () =>
-        createDesktopClerkBridge(environment.stateDir, environment.isDevelopment, userDataPath),
+      try: () => createDesktopClerkBridge(environment.stateDir, userDataPath),
       catch: (cause) =>
         new DesktopClerkBridgeInitializationError({
           stateDir: environment.stateDir,

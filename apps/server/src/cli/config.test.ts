@@ -222,7 +222,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
       assert(child.pid !== undefined);
       for (const source of ["flag", "T3CODE_HOME", "default"] as const) {
         const home = yield* fs.makeTempDirectoryScoped({ prefix: "t3-cli-preflight-pair-" });
-        const baseDir = source === "default" ? path.join(home, ".t3") : home;
+        const baseDir = source === "default" ? path.join(home, ".t3-red") : home;
         const stateDir = path.join(baseDir, "userdata");
         yield* fs.makeDirectory(stateDir, { recursive: true });
         yield* fs.writeFileString(
@@ -264,6 +264,40 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
           new RegExp(`pair --base-dir (${homePattern}|'${homePattern}')`),
         );
       }
+    }),
+  );
+
+  it.effect("refuses the official T3 Code home from the flag and T3CODE_HOME", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const home = yield* fs.makeTempDirectoryScoped({ prefix: "t3-cli-official-home-" });
+      const officialHome = path.join(home, ".t3");
+      for (const source of ["flag", "T3CODE_HOME"] as const) {
+        const error = yield* resolveServerConfig(
+          {
+            ...minimalWebFlags(officialHome),
+            baseDir: source === "flag" ? Option.some(officialHome) : Option.none(),
+            cwd: Option.some(path.join(home, "project")),
+          },
+          Option.none(),
+        ).pipe(
+          Effect.provide(
+            Layer.merge(
+              NetService.layer,
+              ConfigProvider.layer(
+                ConfigProvider.fromEnv({
+                  env: source === "T3CODE_HOME" ? { T3CODE_HOME: officialHome } : {},
+                }),
+              ),
+            ),
+          ),
+          Effect.provideService(HostProcess.HomeDirectory, home),
+          Effect.flip,
+        );
+        expect(String(error)).toContain("the official T3 Code's home");
+      }
+      expect(yield* fs.exists(officialHome)).toBe(false);
     }),
   );
 
@@ -835,12 +869,12 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
         );
 
       expect(yield* resolvePort({ port: Option.none() })).toBe(50_123);
-      expect(selected).toEqual([3773]);
+      expect(selected).toEqual([4773]);
       expect(yield* resolvePort({ port: Option.some(8788) })).toBe(8788);
       expect(
         yield* resolvePort({ mode: Option.some("desktop" as const), port: Option.none() }),
-      ).toBe(3773);
-      expect(selected).toEqual([3773]);
+      ).toBe(4773);
+      expect(selected).toEqual([4773]);
     }),
   );
 

@@ -90,4 +90,21 @@ it.layer(NodeServices.layer)("t3-sqlite-state", (it) => {
         assert.equal(aliasError._tag, "SqliteStateSharedHomeMutationError");
       }),
   );
+
+  it.effect("refuses to mutate the server's default home", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const homeDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-sqlite-state-home-" });
+      const baseDir = path.join(homeDir, ".t3-red");
+      yield* createFixtureDatabase(baseDir);
+
+      const error = yield* runSqliteState({
+        operation: "exec",
+        baseDir,
+        sql: "DELETE FROM fixtures",
+      }).pipe(Effect.provideService(HostProcess.HomeDirectory, homeDir), Effect.flip);
+      assert.equal(error._tag, "SqliteStateSharedHomeMutationError");
+    }),
+  );
 });

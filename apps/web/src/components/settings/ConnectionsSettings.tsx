@@ -158,7 +158,7 @@ import {
 
 // Sessions T3 Connect minted for a device signed in to the linked account.
 const CLOUD_CONNECT_SESSION_SUBJECT = "cloud-connect";
-const DEFAULT_TAILSCALE_SERVE_PORT = 443;
+const DEFAULT_TAILSCALE_SERVE_PORT = 8443;
 const EMPTY_ADVERTISED_ENDPOINTS: ReadonlyArray<AdvertisedEndpoint> = [];
 
 // Colons are invalid in distro names, keeping picker sentinels collision-free.

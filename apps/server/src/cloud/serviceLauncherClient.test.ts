@@ -66,7 +66,7 @@ it.effect.each([3, SERVICE_LAUNCHER_PROTOCOL])(
       const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-trial-" });
       const baseDir = path.join(root, ".t3");
       const exe = (version: string) => path.join(baseDir, "runtime/versions", version, "t3");
-      const installed = path.join(root, ".local/bin/t3");
+      const installed = path.join(root, ".local/bin/t3red");
       for (const file of [exe("1.0.0"), exe("1.1.0")]) {
         yield* fs.makeDirectory(path.dirname(file), { recursive: true });
         yield* fs.writeFileString(file, "");
@@ -218,8 +218,8 @@ it.layer(NodeServices.layer)("self-update launchers", (it) => {
         const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-update-" });
         const baseDir = path.join(root, ".t3");
         const exe = (version: string) => path.join(baseDir, "runtime/versions", version, "t3");
-        const installed = path.join(root, "custom/bin/t3");
-        const onPath = path.join(root, "bin/t3");
+        const installed = path.join(root, "custom/bin/t3red");
+        const onPath = path.join(root, "bin/t3red");
         for (const file of [exe("1.0.0"), exe("1.5.0"), exe("2.0.0")]) {
           yield* fs.makeDirectory(path.dirname(file), { recursive: true });
           yield* fs.writeFileString(file, "");
@@ -250,8 +250,8 @@ it.layer(NodeServices.layer)("self-update launchers", (it) => {
       const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-update-" });
       const baseDir = path.join(root, ".t3");
       const exe = (version: string) => path.join(baseDir, "runtime/versions", version, "t3");
-      const installed = path.join(root, ".local/bin/t3");
-      const onPath = path.join(root, "bin/t3");
+      const installed = path.join(root, ".local/bin/t3red");
+      const onPath = path.join(root, "bin/t3red");
       for (const file of [exe("1.0.0"), exe("2.0.0")]) {
         yield* fs.makeDirectory(path.dirname(file), { recursive: true });
         yield* fs.writeFileString(file, "");
@@ -303,8 +303,8 @@ it.layer(NodeServices.layer)("self-update launchers", (it) => {
       const path = yield* Path.Path;
       const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-update-" });
       const baseDir = path.join(root, ".t3");
-      const installed = path.join(root, ".local/bin/t3");
-      const onPath = path.join(root, "bin/t3");
+      const installed = path.join(root, ".local/bin/t3red");
+      const onPath = path.join(root, "bin/t3red");
       const foreign = path.join(root, "other-home/runtime/versions/1.0.0/t3");
       const target = path.join(baseDir, "runtime/versions/2.0.0/t3");
       for (const file of [installed, foreign, target]) {
