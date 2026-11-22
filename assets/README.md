@@ -10,6 +10,8 @@ Each project uses `text.svg` for the T3 mark and `background.svg` when the backg
 
 Run `vp run icons:export` from the repository root to regenerate the tracked iOS, Linux, Windows, and web assets. The development web exports are also copied to `apps/web/public` for the browser favicon, web app manifest icons, and splash screen. Run `vp run icons:check` to verify that the generated assets and public copies match their sources without changing files.
 
+`red/` is not an Icon Composer project, and `icons:export` leaves it alone. `python3 -I scripts/render-red-icons.py . assets/red` recolors the prod exports into it (needs Pillow); rerun it after any change to `prod/`, including the manual macOS export below.
+
 Exporting requires Icon Composer 2 or newer on macOS. The script selects the newest compatible exporter from Xcode or a standalone Icon Composer installation and pins design generation 26. Set `ICON_COMPOSER_TOOL` to the full path of `Icon Composer.app/Contents/Executables/ictool` to override automatic discovery.
 
 ## macOS exports

@@ -23,7 +23,7 @@ it.layer(NodeServices.layer)("apply-web-brand-assets", (it) => {
         prefix: "apply-web-brand-assets-",
       });
 
-      yield* applyWebBrandAssets("production", targetDirectory);
+      yield* applyWebBrandAssets("red", targetDirectory);
 
       assert.deepStrictEqual(
         (yield* fs.readDirectory(targetDirectory)).toSorted(),

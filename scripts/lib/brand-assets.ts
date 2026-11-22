@@ -35,16 +35,27 @@ export const BRAND_ASSET_PATHS = {
   developmentWebAppleTouchIconPng: "assets/dev/blueprint-web-apple-touch-180.png",
   developmentWebIcon192Png: "assets/dev/blueprint-web-icon-192x192.png",
   developmentWebIcon512Png: "assets/dev/blueprint-web-icon-512x512.png",
+
+  // scripts/render-red-icons.py recolors these from the prod icons; icons:export leaves them alone.
+  redMacIconPng: "assets/red/red-macos-1024.png",
+  redLinuxIconPng: "assets/red/red-universal-1024.png",
+  redWindowsIconIco: "assets/red/red-windows.ico",
+  redWebFaviconIco: "assets/red/red-web-favicon.ico",
+  redWebFavicon16Png: "assets/red/red-web-favicon-16x16.png",
+  redWebFavicon32Png: "assets/red/red-web-favicon-32x32.png",
+  redWebAppleTouchIconPng: "assets/red/red-web-apple-touch-180.png",
+  redWebIcon192Png: "assets/red/red-web-icon-192x192.png",
+  redWebIcon512Png: "assets/red/red-web-icon-512x512.png",
 } as const;
 
-export type WebAssetBrand = "development" | "nightly" | "production";
+export type WebAssetBrand = "development" | "nightly" | "production" | "red";
 
 export const WEB_ASSET_CHANNELS = ["latest", "nightly"] as const;
 
 export type WebAssetChannel = (typeof WEB_ASSET_CHANNELS)[number];
 
 export function resolveWebAssetBrandForChannel(channel: WebAssetChannel): WebAssetBrand {
-  return channel === "nightly" ? "nightly" : "production";
+  return channel === "nightly" ? "nightly" : "red";
 }
 
 export interface IconOverride {
@@ -85,6 +96,14 @@ const WEB_ICON_SOURCE_PATHS_BY_BRAND = {
     appleTouchIconPng: BRAND_ASSET_PATHS.productionWebAppleTouchIconPng,
     icon192Png: BRAND_ASSET_PATHS.productionWebIcon192Png,
     icon512Png: BRAND_ASSET_PATHS.productionWebIcon512Png,
+  },
+  red: {
+    faviconIco: BRAND_ASSET_PATHS.redWebFaviconIco,
+    favicon16Png: BRAND_ASSET_PATHS.redWebFavicon16Png,
+    favicon32Png: BRAND_ASSET_PATHS.redWebFavicon32Png,
+    appleTouchIconPng: BRAND_ASSET_PATHS.redWebAppleTouchIconPng,
+    icon192Png: BRAND_ASSET_PATHS.redWebIcon192Png,
+    icon512Png: BRAND_ASSET_PATHS.redWebIcon512Png,
   },
 } as const satisfies Record<WebAssetBrand, Record<keyof typeof WEB_ICON_TARGET_FILENAMES, string>>;
 
