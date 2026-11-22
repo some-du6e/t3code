@@ -1147,6 +1147,73 @@ describe("deriveMessagesTimelineRows", () => {
     expect(assistantRow?.assistantTurnDiffSummary).toBe(assistantTurnDiffSummary);
   });
 
+  it("offers Rewind to here on an earlier run's final response only", () => {
+    const message = (
+      id: string,
+      role: "user" | "assistant",
+      run: string,
+      second: number,
+    ): TimelineEntry => {
+      const at = `2026-01-01T00:00:${String(second).padStart(2, "0")}Z`;
+      return {
+        id: `${id}-entry`,
+        kind: "message",
+        createdAt: at,
+        message: {
+          id: MessageId.make(id),
+          role,
+          text: id,
+          runId: RunId.make(run),
+          ...(role === "user" ? { inputIntent: "turn_start" as const } : {}),
+          streaming: false,
+          createdAt: at,
+          updatedAt: at,
+        },
+      };
+    };
+    const checkpoint = (run: string, checkpointTurnCount: number): TurnDiffSummary => ({
+      runId: RunId.make(run),
+      checkpointTurnCount,
+      checkpointRef: CheckpointRef.make(`refs/t3/checkpoints/${run}`),
+      status: "ready",
+      files: [],
+      assistantMessageId: null,
+      completedAt: "2026-01-01T00:00:30Z",
+    });
+    const input = {
+      timelineEntries: [
+        message("user-1", "user", "run-1", 0),
+        message("commentary-1", "assistant", "run-1", 1),
+        message("final-1", "assistant", "run-1", 2),
+        message("user-2", "user", "run-2", 3),
+        message("final-2", "assistant", "run-2", 4),
+      ],
+      expandedRunIds: new Set([RunId.make("run-1")]),
+      isWorking: false,
+      turnDiffSummaries: [checkpoint("run-1", 1), checkpoint("run-2", 2)],
+      supportsConversationRollback: true,
+    };
+    const rewindTargets = (rows: ReadonlyArray<MessagesTimelineRow>) =>
+      rows.flatMap((row) =>
+        row.kind === "message" && row.message.role === "assistant"
+          ? [[row.message.id, row.rewindTurnCount]]
+          : [],
+      );
+
+    expect(rewindTargets(deriveMessagesTimelineRows(input))).toEqual([
+      ["commentary-1", undefined],
+      ["final-1", 1],
+      ["final-2", undefined],
+    ]);
+    expect(
+      rewindTargets(deriveMessagesTimelineRows({ ...input, supportsConversationRollback: false })),
+    ).toEqual([
+      ["commentary-1", undefined],
+      ["final-1", undefined],
+      ["final-2", undefined],
+    ]);
+  });
+
   it("folds the first assistant message and settled work before the terminal response", () => {
     const timelineEntries = [
       {
@@ -3666,6 +3733,33 @@ it.each([
   ).toBe(next);
 });
 
+it.each(["message", "assistant-meta"] as const)(
+  "rebuilds a %s row when only its rewind target changes",
+  (kind) => {
+    const base = {
+      id: "final",
+      createdAt: "2026-01-01T00:00:00Z",
+      message: {
+        id: MessageId.make("final"),
+        role: "assistant" as const,
+        text: "Done",
+        runId: RunId.make("run"),
+        streaming: false,
+        createdAt: "2026-01-01T00:00:00Z",
+        updatedAt: "2026-01-01T00:00:00Z",
+      },
+      showAssistantCopyButton: true,
+      assistantCopyStreaming: false,
+    };
+    const row: Extract<MessagesTimelineRow, { kind: "message" | "assistant-meta" }> =
+      kind === "message" ? { ...base, kind, showAssistantMeta: true } : { ...base, kind };
+    const previous = computeStableMessagesTimelineRows([row], { result: [], byId: new Map() });
+    const next = computeStableMessagesTimelineRows([{ ...row, rewindTurnCount: 1 }], previous);
+    expect(next.result[0]).toMatchObject({ rewindTurnCount: 1 });
+    expect(computeStableMessagesTimelineRows([{ ...row, rewindTurnCount: 1 }], next)).toBe(next);
+  },
+);
+
 describe("streaming v2 row projection", () => {
   function fixture(text = "") {
     const source = makeStreamingTimelineFixture(text);
@@ -4362,6 +4456,55 @@ describe("linked timeline resources", () => {
       "summary:created",
       "assistant-meta:final",
     ]);
+  });
+
+  it("moves Rewind to here onto the action row below a created-chat summary", () => {
+    const message = (
+      id: string,
+      role: "user" | "assistant",
+      messageRunId: RunId,
+      second: number,
+    ): TimelineEntry => ({
+      kind: "message",
+      id,
+      createdAt: `2026-09-08T10:00:0${second}Z`,
+      message: {
+        id: MessageId.make(id),
+        role,
+        text: id,
+        runId: messageRunId,
+        streaming: false,
+        createdAt: `2026-09-08T10:00:0${second}Z`,
+        updatedAt: `2026-09-08T10:00:0${second}Z`,
+      },
+    });
+    const laterRunId = RunId.make("later-run");
+    const rows = deriveMessagesTimelineRows({
+      ...common,
+      supportsConversationRollback: true,
+      timelineEntries: [
+        message("intro", "assistant", runId, 0),
+        event("created", "thread_created"),
+        message("final", "assistant", runId, 4),
+        message("later-prompt", "user", laterRunId, 5),
+        message("later-answer", "assistant", laterRunId, 6),
+      ],
+      turnDiffSummaries: [
+        {
+          runId,
+          checkpointTurnCount: 1,
+          checkpointRef: CheckpointRef.make("refs/t3/checkpoints/resource-run"),
+          status: "ready",
+          files: [],
+          assistantMessageId: MessageId.make("final"),
+          completedAt: "2026-09-08T10:00:04Z",
+        },
+      ],
+    });
+    expect(rows.find((row) => row.id === "final")).toMatchObject({ showAssistantMeta: false });
+    expect(rows.find((row) => row.id === "assistant-meta:final")).toMatchObject({
+      rewindTurnCount: 1,
+    });
   });
 
   it("shows a created chat after a steer only when that steer's segment is open", () => {

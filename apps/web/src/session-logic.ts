@@ -1153,6 +1153,49 @@ export function deriveRevertTurnCountByUserMessageId(input: {
   return byUserMessageId;
 }
 
+// A visible local run rewinds to its own checkpoint once a later visible run exists to drop.
+export function deriveRewindTurnCountByRunId(input: {
+  readonly timelineEntries: ReadonlyArray<TimelineEntry>;
+  readonly checkpoints: ReadonlyArray<ThreadCheckpointSummary>;
+  readonly availableRevertTurnCounts?: ReadonlySet<number> | undefined;
+  readonly unsettledRunId?: RunId | null;
+}): Map<RunId, number> {
+  const turnCountByRunId = new Map<RunId, number>();
+  for (const checkpoint of input.checkpoints) {
+    if (isRewindableCheckpoint(checkpoint)) {
+      turnCountByRunId.set(checkpoint.runId, checkpoint.checkpointTurnCount);
+    }
+  }
+  const byRunId = new Map<RunId, number>();
+  const seenRunIds = new Set<RunId>();
+  let previousRunId: RunId | null = null;
+  for (const entry of input.timelineEntries) {
+    if (entry.kind !== "message" && entry.kind !== "work") continue;
+    const projectedItem =
+      entry.kind === "message" ? entry.projectedItem : entry.entry.projectedItem;
+    if (projectedItem?.visibility === "inherited") continue;
+    const runId =
+      entry.kind === "message"
+        ? entry.message.runId
+        : entry.entry.itemType === "notification"
+          ? entry.entry.runId
+          : null;
+    if (runId == null || seenRunIds.has(runId)) continue;
+    seenRunIds.add(runId);
+    if (previousRunId !== null && previousRunId !== input.unsettledRunId) {
+      const target = turnCountByRunId.get(previousRunId);
+      if (
+        target !== undefined &&
+        (input.availableRevertTurnCounts === undefined ||
+          input.availableRevertTurnCounts.has(target))
+      )
+        byRunId.set(previousRunId, target);
+    }
+    previousRunId = runId;
+  }
+  return byRunId;
+}
+
 // A missing snapshot (no git, or a side chat) still pins a conversation position; only
 // restoring files needs a ready one.
 function isRewindableCheckpoint(checkpoint: Pick<OrchestrationV2Checkpoint, "status">) {

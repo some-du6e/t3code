@@ -36,6 +36,7 @@ import {
 } from "@t3tools/client-runtime/work-log/presentation";
 import {
   deriveRevertTurnCountByUserMessageId,
+  deriveRewindTurnCountByRunId,
   isStreamingMessageTextUpdate,
   isStreamingTurnItemTextUpdate,
   timelineEntryIsPersistentResourceCard,
@@ -641,6 +642,7 @@ type MessagesTimelineRowContent =
       assistantCopyStreaming: boolean;
       assistantTurnDiffSummary?: TurnDiffSummary | undefined;
       revertTurnCount?: number | undefined;
+      rewindTurnCount?: number | undefined;
       /** Another of your messages follows directly, so the two sit closer together. */
       groupedWithNext?: boolean;
       /** Another of your messages sits directly above, so the joined corners tighten. */
@@ -656,6 +658,7 @@ type MessagesTimelineRowContent =
       message: ChatMessage;
       showAssistantCopyButton: boolean;
       assistantCopyStreaming: boolean;
+      rewindTurnCount?: number | undefined;
     }
   | {
       kind: "event";
@@ -1387,6 +1390,7 @@ function attachTrailingToolGroupsToAssistant(
       message: row.message,
       showAssistantCopyButton: row.showAssistantCopyButton,
       assistantCopyStreaming: row.assistantCopyStreaming,
+      rewindTurnCount: row.rewindTurnCount,
     });
   }
 
@@ -1660,6 +1664,14 @@ export function deriveMessagesTimelineRows(
         availableRevertTurnCounts: input.availableRevertTurnCounts,
       })
     : new Map<MessageId, number>();
+  const rewindTurnCountByRunId = input.supportsConversationRollback
+    ? deriveRewindTurnCountByRunId({
+        timelineEntries: input.timelineEntries,
+        checkpoints: input.turnDiffSummaries,
+        unsettledRunId,
+        availableRevertTurnCounts: input.availableRevertTurnCounts,
+      })
+    : new Map<RunId, number>();
   const nextRows: MessagesTimelineRow[] = [];
   const terminalAssistantMessageIds = deriveTerminalAssistantMessageIds(timelineEntries);
   const failedRunIds = failedTimelineRunIds(timelineEntries, input.latestRun ?? null);
@@ -2330,6 +2342,10 @@ export function deriveMessagesTimelineRows(
         timelineEntry.message.role === "user"
           ? revertTurnCountByUserMessageId.get(timelineEntry.message.id)
           : undefined,
+      rewindTurnCount:
+        showAssistantMeta && timelineEntry.message.runId != null
+          ? rewindTurnCountByRunId.get(timelineEntry.message.runId)
+          : undefined,
     });
   }
 
@@ -2791,7 +2807,8 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
         a.projectedItem === bm.projectedItem &&
         a.message === bm.message &&
         a.showAssistantCopyButton === bm.showAssistantCopyButton &&
-        a.assistantCopyStreaming === bm.assistantCopyStreaming
+        a.assistantCopyStreaming === bm.assistantCopyStreaming &&
+        a.rewindTurnCount === bm.rewindTurnCount
       );
     }
 
@@ -2908,6 +2925,7 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
         a.assistantCopyStreaming === bm.assistantCopyStreaming &&
         a.assistantTurnDiffSummary === bm.assistantTurnDiffSummary &&
         a.revertTurnCount === bm.revertTurnCount &&
+        a.rewindTurnCount === bm.rewindTurnCount &&
         a.groupedWithNext === bm.groupedWithNext &&
         a.groupedWithPrevious === bm.groupedWithPrevious &&
         a.continuesSteer === bm.continuesSteer

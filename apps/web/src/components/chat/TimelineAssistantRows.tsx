@@ -6,7 +6,7 @@ import { T, useGT, useMessages } from "gt-react";
 import { memo, use, useState } from "react";
 import { type ChatMessage, type TurnDiffSummary } from "../../types";
 import ChatMarkdown from "../ChatMarkdown";
-import { GitForkIcon, ReplyIcon } from "lucide-react";
+import { GitForkIcon, ReplyIcon, RewindIcon } from "lucide-react";
 import { captureAssistantMessageOpening } from "~/lib/assistantTextSelection";
 import { responseContextRecord } from "~/lib/composerContextRecords";
 import { Button } from "../ui/button";
@@ -108,6 +108,7 @@ export function AssistantTimelineRow({ row }: { row: Extract<TimelineRow, { kind
             message={row.message}
             showCopyButton={row.showAssistantCopyButton}
             copyStreaming={row.assistantCopyStreaming}
+            rewindTurnCount={row.rewindTurnCount}
           />
         ) : null}
       </div>
@@ -200,6 +201,36 @@ function AssistantForkButton({
   );
 }
 
+function AssistantRewindButton({ turnCount }: { readonly turnCount: number }) {
+  const { onRewindToResponse } = use(TimelineRowCtx);
+  const activity = use(TimelineRowActivityCtx);
+  if (onRewindToResponse === undefined) return null;
+
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <Button
+            type="button"
+            size="xs"
+            variant="ghost"
+            disabled={activity.isRevertingCheckpoint || activity.isWorking}
+            onClick={() => onRewindToResponse(turnCount)}
+            // oxlint-disable-next-line t3code/no-untranslated-copy -- fork-only copy, kept out of the GT catalogs
+            aria-label="Rewind to here"
+          />
+        }
+      >
+        <RewindIcon className="size-3" />
+      </TooltipTrigger>
+      <TooltipPopup side="top">
+        {/* oxlint-disable-next-line t3code/no-untranslated-copy -- fork-only copy, kept out of the GT catalogs */}
+        {"Rewind to here"}
+      </TooltipPopup>
+    </Tooltip>
+  );
+}
+
 export function AssistantMetaTimelineRow({
   row,
 }: {
@@ -213,6 +244,7 @@ export function AssistantMetaTimelineRow({
         message={row.message}
         showCopyButton={row.showAssistantCopyButton}
         copyStreaming={row.assistantCopyStreaming}
+        rewindTurnCount={row.rewindTurnCount}
         alwaysVisible
       />
     </div>
@@ -225,6 +257,7 @@ function AssistantMessageMeta({
   message,
   showCopyButton,
   copyStreaming,
+  rewindTurnCount,
   alwaysVisible = false,
 }: {
   className?: string;
@@ -232,6 +265,7 @@ function AssistantMessageMeta({
   message: ChatMessage;
   showCopyButton: boolean;
   copyStreaming: boolean;
+  rewindTurnCount?: number | undefined;
   alwaysVisible?: boolean;
 }) {
   const ctx = use(TimelineRowCtx);
@@ -257,6 +291,9 @@ function AssistantMessageMeta({
       />
       {projectedItem?.item.type === "assistant_message" ? (
         <AssistantForkButton projectedItem={projectedItem} />
+      ) : null}
+      {rewindTurnCount !== undefined && !message.streaming ? (
+        <AssistantRewindButton turnCount={rewindTurnCount} />
       ) : null}
       {!message.streaming && projectedItem ? (
         <AssistantReplyButton message={message} itemId={projectedItem.sourceItemId} />

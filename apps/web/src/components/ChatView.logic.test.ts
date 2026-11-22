@@ -1,4 +1,4 @@
-import { rewindToMessage } from "./chat/chatViewSend";
+import { rewindToMessage, rewindToResponse } from "./chat/chatViewSend";
 import * as session from "../state/session";
 import {
   environmentContextRecord,
@@ -49,6 +49,7 @@ import {
   type OrchestrationV2ProjectedTurnItem,
   type WorktreeSetupSnapshot,
 } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
@@ -987,6 +988,57 @@ describe("waitForRevertedMessage", () => {
       threadContexts: [drafted, mentioned],
       environmentContexts: [machine],
     });
+  });
+
+  it("rewinds to a response's run and leaves the draft as it was", async () => {
+    const { state, projection } = projectionAtom();
+    useComposerDraftStore.setState({ draftsByThreadKey: {}, draftThreadsByThreadKey: {} });
+    useComposerDraftStore.getState().setPrompt(threadRef, "Unsent draft");
+
+    const result = await rewindToResponse({
+      environmentId: threadRef.environmentId,
+      routeThreadRef: threadRef,
+      threadId: threadRef.threadId,
+      turnCount: 2,
+      restoreFiles: false,
+      checkpoint: undefined,
+      revertThreadCheckpoint: async () => {
+        appAtomRegistry.set(state, {
+          data: Option.some({
+            ...projection,
+            providerThreads: projection.providerThreads.map((providerThread) => ({
+              ...providerThread,
+              lastRunOrdinal: 2,
+            })),
+            runs: projection.runs.map((run) =>
+              run.ordinal > 2 ? { ...run, status: "rolled_back" as const } : run,
+            ),
+          }),
+        });
+        return AsyncResult.success(undefined);
+      },
+    });
+
+    expect(result).toEqual({ error: null });
+    expect(useComposerDraftStore.getState().getComposerDraft(threadRef)?.prompt).toBe(
+      "Unsent draft",
+    );
+  });
+
+  it("returns the error when a response rewind is refused", async () => {
+    projectionAtom();
+    const result = await rewindToResponse({
+      environmentId: threadRef.environmentId,
+      routeThreadRef: threadRef,
+      threadId: threadRef.threadId,
+      turnCount: 2,
+      restoreFiles: true,
+      checkpoint: undefined,
+      revertThreadCheckpoint: async () =>
+        AsyncResult.failure(Cause.fail(new Error("The provider could not roll back."))),
+    });
+
+    expect(result).toEqual({ error: "The provider could not roll back." });
   });
 
   it("rejects with the projected reason when the rollback fails for good", async () => {

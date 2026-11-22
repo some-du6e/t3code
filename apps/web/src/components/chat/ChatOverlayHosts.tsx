@@ -10,6 +10,7 @@ import { rewindFileRestore } from "@t3tools/client-runtime/state/thread-reposito
 import { useAtomValue } from "@effect/atom-react";
 import { T, Var } from "gt-react";
 import { Atom } from "effect/reactivity";
+import type { ComponentProps } from "react";
 
 import { appAtomRegistry } from "~/rpc/atomRegistry";
 import { useRightPanelStore } from "~/rightPanelStore";
@@ -270,6 +271,92 @@ export function RevertConfirmHost(props: {
                 composer. “Revert files too” also undoes your own edits.
               </T>
             )}
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogClose render={<Button variant="outline" />}>
+            <T>Cancel</T>
+          </AlertDialogClose>
+          <Button
+            variant="destructive-outline"
+            disabled={fileRestore === null}
+            onClick={() => confirm(true)}
+          >
+            {fileRestore === "repositories" ? (
+              <T>Revert repositories too</T>
+            ) : (
+              <T>Revert files too</T>
+            )}
+          </Button>
+          <Button onClick={() => confirm(false)}>
+            <T>Revert and keep changes</T>
+          </Button>
+        </AlertDialogFooter>
+      </AlertDialogPopup>
+    </AlertDialog>
+  );
+}
+
+interface PendingRewind {
+  readonly turnCount: number;
+}
+
+const rewindConfirmAtom = makeThreadOverlayAtom<PendingRewind>("rewind-confirm");
+
+export function openRewindConfirm(threadKey: string, pending: PendingRewind): void {
+  appAtomRegistry.set(rewindConfirmAtom, { threadKey, value: pending });
+}
+
+export function RewindConfirmHost(
+  props: Omit<ComponentProps<typeof RevertConfirmHost>, "onConfirm"> & {
+    readonly onConfirm: (turnCount: number, restoreFiles: boolean) => void;
+  },
+) {
+  const pending = useThreadOverlay(rewindConfirmAtom, props.threadKey);
+  const checkpoint =
+    pending === null ? undefined : findRevertCheckpoint(props.projection, pending.turnCount);
+  // Only a missing snapshot depends on the task folder: its repositories may still restore.
+  const taskFolderQuery = useEnvironmentQuery(
+    checkpoint?.status === "missing" && props.taskFolderPath !== null
+      ? filesystemEnvironment.taskFolder({
+          environmentId: props.environmentId,
+          input: { worktreePath: props.taskFolderPath },
+        })
+      : null,
+  );
+  const fileRestore =
+    // The server refuses file restore outside an isolated worktree.
+    props.projection === null || props.worktreePath === null
+      ? null
+      : rewindFileRestore({
+          projection: props.projection,
+          checkpoint,
+          taskFolder: taskFolderQuery.data?.taskFolder,
+        });
+  const confirm = (restoreFiles: boolean) => {
+    if (pending === null || (restoreFiles && fileRestore === null)) return;
+    closeThreadOverlay(rewindConfirmAtom);
+    props.onConfirm(pending.turnCount, restoreFiles);
+  };
+  return (
+    <AlertDialog
+      open={pending !== null}
+      onOpenChange={(open) => {
+        if (!open) closeThreadOverlay(rewindConfirmAtom);
+      }}
+    >
+      <AlertDialogPopup>
+        <AlertDialogHeader>
+          <AlertDialogTitle>
+            {/* oxlint-disable-next-line t3code/no-untranslated-copy -- fork-only copy, kept out of the GT catalogs */}
+            {"Rewind to here?"}
+          </AlertDialogTitle>
+          <AlertDialogDescription>
+            {fileRestore === "repositories"
+              ? // oxlint-disable-next-line t3code/no-untranslated-copy -- fork-only copy, kept out of the GT catalogs
+                "Remove every turn after this response. Your draft stays in the composer. “Revert repositories too” also puts this thread’s repository worktrees back to how this response left them. Files in the project folder itself stay as they are."
+              : // oxlint-disable-next-line t3code/no-untranslated-copy -- fork-only copy, kept out of the GT catalogs
+                "Remove every turn after this response. Your draft stays in the composer. “Revert files too” also puts your files back to how this response left them, undoing later edits."}
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>

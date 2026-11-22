@@ -28,13 +28,13 @@ import { buildThreadRouteParams } from "../../threadRoutes";
 import { useComposerDraftStore } from "../../composerDraftStore";
 import { threadEnvironment } from "../../state/threads";
 import { waitForThreadShell } from "../../state/entities";
-import { openRevertConfirm } from "./ChatOverlayHosts";
+import { openRevertConfirm, openRewindConfirm } from "./ChatOverlayHosts";
 import { assetEnvironment } from "../../state/assets";
 import { readEnvironmentScope } from "../../state/session";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { useOrchestrationCommand } from "../../state/use-orchestration-command";
 import { useAtomQueryRunner } from "../../state/use-atom-query-runner";
-import { rewindToMessage } from "./chatViewSend";
+import { rewindToMessage, rewindToResponse } from "./chatViewSend";
 import { makeThreadErrorSetter } from "../ChatView.logic";
 interface TimelineRewindInput {
   readonly environmentId: EnvironmentId;
@@ -58,7 +58,7 @@ interface TimelineRewindInput {
 
 /**
  * Going back in a thread's timeline: reverting to an earlier turn (restoring that message into
- * the composer) and forking a new thread from a run.
+ * the composer), rewinding to the end of a response, and forking a new thread from a run.
  */
 export function useTimelineRewind(input: TimelineRewindInput) {
   const {
@@ -185,6 +185,82 @@ export function useTimelineRewind(input: TimelineRewindInput) {
   };
   const onConfirmRevertStable = useStableCallback(onConfirmRevert);
 
+  // ChatView's timeline messages carry no assistant rows, so this targets the turn count alone.
+  const onRewindToResponse = async (turnCount: number, restoreFiles?: boolean) => {
+    if (
+      !readLocalApi() ||
+      !activeThread ||
+      isRevertingCheckpoint ||
+      !readEnvironmentScope(environmentId, AuthOrchestrationOperateScope)
+    )
+      return;
+    if (!supportsConversationRollback) {
+      setThreadError(
+        activeThread.id,
+        m(
+          msg(
+            "This provider does not support reverting conversation history. Start a new thread instead.",
+          ),
+        ),
+      );
+      return;
+    }
+    if (activeEnvironmentUnavailable && activeEnvironmentUnavailableLabel) {
+      setThreadError(
+        activeThread.id,
+        m(
+          msg("Reconnect {environment} before reverting checkpoints.", {
+            environment: activeEnvironmentUnavailableLabel,
+          }),
+        ),
+      );
+      return;
+    }
+    if (phase === "running" || phase === "connecting" || isSendBusy) {
+      setThreadError(
+        activeThread.id,
+        m(msg("Interrupt the current turn before reverting checkpoints.")),
+      );
+      return;
+    }
+    if (restoreFiles === undefined) {
+      openRewindConfirm(routeThreadKey, { turnCount });
+      return;
+    }
+
+    useComposerDraftStore.setState((store) => ({
+      rewindingThreadKeys: new Set(store.rewindingThreadKeys).add(routeThreadKey),
+    }));
+    setThreadError(activeThread.id, null);
+    const rewind = await rewindToResponse({
+      environmentId,
+      routeThreadRef,
+      threadId: activeThread.id,
+      turnCount,
+      restoreFiles,
+      checkpoint: findRevertCheckpoint(serverProjection, turnCount),
+      revertThreadCheckpoint,
+    });
+    useComposerDraftStore.setState((store) => {
+      const remaining = new Set(store.rewindingThreadKeys);
+      remaining.delete(routeThreadKey);
+      return { rewindingThreadKeys: remaining };
+    });
+    if (rewind.error !== null) {
+      setThreadError(activeThread.id, rewind.error);
+      return;
+    }
+    requestAnimationFrame(() => {
+      if (currentRouteThreadKeyRef.current === routeThreadKey) composerRef.current?.focusAtEnd();
+    });
+  };
+  const onRewindToResponseStable = useStableCallback((turnCount: number) => {
+    void onRewindToResponse(turnCount);
+  });
+  const onConfirmRewindStable = useStableCallback((turnCount: number, restoreFiles: boolean) => {
+    void onRewindToResponse(turnCount, restoreFiles);
+  });
+
   const onForkFromRun = async (input: {
     readonly sourceThreadId: ThreadId;
     readonly runId: RunId;
@@ -235,7 +311,9 @@ export function useTimelineRewind(input: TimelineRewindInput) {
   const onRevertTimelineTurnStable = useStableCallback(onRevertTimelineTurn);
   return {
     onConfirmRevertStable,
+    onConfirmRewindStable,
     onForkFromRunStable,
     onRevertTimelineTurnStable,
+    onRewindToResponseStable,
   };
 }

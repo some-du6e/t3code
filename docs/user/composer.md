@@ -205,6 +205,14 @@ This removes the selected message and later conversation from the active thread
 and provider history. It does not undo external actions or separate provider
 memory. The action is available only when the provider supports rewind.
 
+## Rewind to a response
+
+On web and desktop, choose **Rewind to here** beneath an earlier response to remove every turn
+after it. Your draft stays in the composer. As with **Edit from here**, choose
+**Revert and keep changes** to leave files alone, or **Revert files too** to put them back to
+how that response left them. To keep the later turns, use **Fork from this response**, which
+starts a new thread from that response.
+
 ## Prompt stash
 
 On web and desktop, press `Cmd+S` on macOS or `Ctrl+S` on Windows and Linux to save

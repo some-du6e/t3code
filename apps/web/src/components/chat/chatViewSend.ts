@@ -289,6 +289,58 @@ export async function rewindToMessage(input: {
   }
 }
 
+/** Reverts the thread to the end of run `turnCount`, leaving the composer draft as it is. */
+export async function rewindToResponse(input: {
+  readonly environmentId: EnvironmentId;
+  readonly routeThreadRef: ScopedThreadRef;
+  readonly threadId: ThreadId;
+  readonly turnCount: number;
+  readonly restoreFiles: boolean;
+  readonly checkpoint: ReturnType<typeof findRevertCheckpoint>;
+  readonly revertThreadCheckpoint: Parameters<typeof rewindToMessage>[0]["revertThreadCheckpoint"];
+}): Promise<{ readonly error: string | null }> {
+  try {
+    const commandId = CommandId.make(randomUUID());
+    const unrestored = await waitForRevertedMessage(
+      input.routeThreadRef,
+      input.turnCount,
+      commandId,
+      async () => {
+        const result = await input.revertThreadCheckpoint({
+          environmentId: input.environmentId,
+          input: {
+            commandId,
+            threadId: input.threadId,
+            turnCount: input.turnCount,
+            restoreFiles: input.restoreFiles,
+            ...(input.checkpoint === undefined
+              ? {}
+              : { checkpointId: input.checkpoint.id, scopeId: input.checkpoint.scopeId }),
+          },
+        });
+        if (result._tag === "Failure") throw squashAtomCommandFailure(result);
+      },
+    );
+    if (unrestored.length > 0) {
+      toastManager.add({
+        type: "warning",
+        title: m(msg("Some repositories were not rewound")),
+        description: m(
+          msg(
+            "{count, plural, one {{repositories} had no snapshot from before these turns, so it keeps the changes. Check the uncommitted changes there.} other {{repositories} had no snapshot from before these turns, so they keep the changes. Check the uncommitted changes there.}}",
+            { repositories: unrestored.join(", "), count: unrestored.length },
+          ),
+        ),
+      });
+    }
+    return { error: null };
+  } catch (error) {
+    return {
+      error: error instanceof Error ? error.message : m(msg("Failed to revert thread state.")),
+    };
+  }
+}
+
 function withRestored<T>(
   existing: ReadonlyArray<T> | undefined,
   restored: ReadonlyArray<T>,

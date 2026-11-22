@@ -302,6 +302,7 @@ import {
   openBranchRestoreConfirm,
   PullRequestThreadDialogHost,
   RevertConfirmHost,
+  RewindConfirmHost,
 } from "./chat/ChatOverlayHosts";
 import type { AssistantCitationRequest } from "./chat/AssistantCitationSource";
 import { useCitedHistory } from "./chat/citationProcedure";
@@ -2983,7 +2984,7 @@ export default function ChatView(props: ChatViewProps) {
   const openSideChatStable = useStableCallback(() => void sideChat.open());
   const openSurfaceInMainView = useOpenSurfaceInMainView(activeThreadRef);
   const sendSideChatStable = useStableCallback(sideChat.open);
-  const { onConfirmRevertStable, onForkFromRunStable, onRevertTimelineTurnStable } =
+  const { onConfirmRevertStable, onForkFromRunStable, onRevertTimelineTurnStable, ...rewind } =
     useTimelineRewind({
       environmentId,
       routeThreadRef,
@@ -3650,6 +3651,7 @@ export default function ChatView(props: ChatViewProps) {
                   threadStartCheckpointAvailable={threadStartCheckpointAvailable}
                   availableRevertTurnCounts={availableRevertTurnCounts}
                   onRevertToTurnCount={onRevertTimelineTurnStable}
+                  onRewindToResponse={rewind.onRewindToResponseStable}
                   onUseArtifactTemplate={insertArtifactTemplateStable}
                   onSendAppMessage={sendAppMessageStable}
                   isRevertingCheckpoint={isRevertingCheckpoint}
@@ -4209,6 +4211,14 @@ export default function ChatView(props: ChatViewProps) {
         projection={serverProjection}
         worktreePath={activeThread?.worktreePath ?? null}
         onConfirm={onConfirmRevertStable}
+      />
+      <RewindConfirmHost
+        threadKey={routeThreadKey}
+        environmentId={environmentId}
+        taskFolderPath={activeThreadWorktreePath}
+        projection={serverProjection}
+        worktreePath={activeThread?.worktreePath ?? null}
+        onConfirm={rewind.onConfirmRewindStable}
       />
       {embedded ? null : <LinkPullRequestDialogHost />}
       <ThreadVisitWatermark threadRef={routeThreadRef} />

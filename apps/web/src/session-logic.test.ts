@@ -29,6 +29,7 @@ import {
   deriveTimelineEntriesFromVisibleTurnItems,
   deriveTimelineEntriesFromVisibleTurnItemsWithState,
   deriveRevertTurnCountByUserMessageId,
+  deriveRewindTurnCountByRunId,
   derivePhase,
   findRevertCheckpoint,
   isLatestRunSettled,
@@ -481,6 +482,100 @@ describe("V2 session presentation", () => {
           }),
         ),
       ).toEqual({ "user-2": 0 });
+    });
+
+    const rewindTargets = (
+      timelineEntries: ReadonlyArray<TimelineEntry>,
+      checkpoints: Parameters<typeof deriveRewindTurnCountByRunId>[0]["checkpoints"],
+      options: { availableRevertTurnCounts?: ReadonlySet<number>; unsettledRunId?: RunId } = {},
+    ) =>
+      Object.fromEntries(
+        deriveRewindTurnCountByRunId({
+          timelineEntries,
+          checkpoints,
+          availableRevertTurnCounts: options.availableRevertTurnCounts,
+          unsettledRunId: options.unsettledRunId ?? null,
+        }),
+      );
+
+    it("rewinds a response to its own run's checkpoint, never the latest run's", () => {
+      expect(
+        rewindTargets([1, 2, 3].flatMap(turn), [checkpoint(1), checkpoint(2), checkpoint(3)]),
+      ).toEqual({ "run-1": 1, "run-2": 2 });
+      // Runs 1 and 3 were rewound, so the ordinals have gaps.
+      expect(
+        rewindTargets([2, 4, 5].flatMap(turn), [
+          checkpoint(2),
+          checkpoint(3, "stale"),
+          checkpoint(4),
+          checkpoint(5),
+        ]),
+      ).toEqual({ "run-2": 2, "run-4": 4 });
+    });
+
+    it("rewinds to a missing checkpoint but not to a stale, failed, or absent one", () => {
+      expect(
+        rewindTargets([1, 2, 3, 4, 5].flatMap(turn), [
+          checkpoint(1, "missing"),
+          checkpoint(2, "stale"),
+          { ...checkpoint(3), status: "error" },
+          checkpoint(5),
+        ]),
+      ).toEqual({ "run-1": 1 });
+    });
+
+    it("offers only targets the provider can roll back to, and never the unsettled run", () => {
+      const checkpoints = [checkpoint(1), checkpoint(2), checkpoint(3)];
+      expect(
+        rewindTargets([1, 2, 3].flatMap(turn), checkpoints, {
+          availableRevertTurnCounts: new Set([0, 2]),
+        }),
+      ).toEqual({ "run-2": 2 });
+      expect(
+        rewindTargets([1, 2, 3].flatMap(turn), checkpoints, { unsettledRunId: runId(2) }),
+      ).toEqual({ "run-1": 1 });
+    });
+
+    it("never rewinds inherited history", () => {
+      const fixture = makeStreamingTimelineFixture();
+      const inheritedEntries = deriveTimelineEntriesFromVisibleTurnItems({
+        visibleTurnItems: fixture.visibleTurnItems
+          .filter(({ item }) => item.runId === fixture.historyRunId)
+          .map((item) => ({ ...item, visibility: "inherited" as const })),
+        optimisticMessages: [],
+      });
+      expect(
+        rewindTargets(
+          [...inheritedEntries, ...turn(2), ...turn(3)],
+          [{ ...checkpoint(7), runId: fixture.historyRunId }, checkpoint(2), checkpoint(3)],
+        ),
+      ).toEqual({ "run-2": 2 });
+    });
+
+    it("counts a notification-only wake run as a later turn, but not unrelated work", () => {
+      const work = (
+        id: string,
+        ordinal: number,
+        itemType: "notification" | "command_execution",
+      ): TimelineEntry => ({
+        id,
+        kind: "work",
+        createdAt: "2026-06-20T00:00:05.000Z",
+        entry: {
+          id,
+          createdAt: "2026-06-20T00:00:05.000Z",
+          runId: runId(ordinal),
+          itemType,
+          label: id,
+          tone: "info",
+        },
+      });
+      expect(
+        rewindTargets(
+          [...turn(1), work("wake", 2, "notification"), work("background", 3, "command_execution")],
+          [checkpoint(1), checkpoint(2), checkpoint(3)],
+        ),
+      ).toEqual({ "run-1": 1 });
     });
   });
 
