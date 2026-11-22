@@ -141,7 +141,8 @@ jobs:
             done <<< "$hits"
           }
           guard '"com\.t3tools\.t3code' apps/desktop/src scripts/build-desktop-artifact.ts
-          guard ', "\.t3"\)' apps/desktop/src/app/DesktopStatePaths.ts apps/server/src/os-jank.ts
+          guard 'homeDirectory, "\.t3"\),' apps/desktop/src/app/DesktopStatePaths.ts
+          guard 'HostProcess\.HomeDirectory, "\.t3"\)' apps/server/src/os-jank.ts
           guard '\$HOME/\.t3[/"]' packages/ssh/src apps/desktop/src/wsl
           guard 'pingdotgg/t3code' packages/shared/src/cliRelease.ts
           guard '"t3code-v2"' apps/desktop/src/app/DesktopUserData.ts
