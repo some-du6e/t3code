@@ -3,6 +3,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
 import * as DesktopConfig from "./DesktopConfig.ts";
@@ -70,6 +71,23 @@ describe("DesktopEnvironment", () => {
 
       assert.equal(development.stateDir, "/Users/alice/.t3-red/dev");
       assert.equal(production.stateDir, "/Users/alice/.t3-red/userdata");
+    }),
+  );
+
+  it.effect("ignores a T3CODE_HOME that names the official T3 Code's home", () =>
+    Effect.gen(function* () {
+      const inherited = { T3CODE_HOME: "/Users/alice/.t3/" };
+      const production = yield* makeEnvironment({}, inherited);
+      const development = yield* makeEnvironment(
+        {},
+        { ...inherited, VITE_DEV_SERVER_URL: "http://localhost:5173" },
+      );
+
+      // Its backend must not inherit it either, since the server prefers it to the bootstrap.
+      assert.isTrue(Option.isNone(production.configuredBaseDir));
+      assert.equal(production.baseDir, "/Users/alice/.t3-red");
+      assert.equal(production.stateDir, "/Users/alice/.t3-red/userdata");
+      assert.equal(development.stateDir, "/Users/alice/.t3-red/dev");
     }),
   );
 });

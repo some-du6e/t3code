@@ -186,7 +186,7 @@ describe("t3 pair", () => {
                 if (String(input).startsWith(origin)) return fetch(input, init);
                 assert.equal(
                   String(input),
-                  "https://pair-test.tail.ts.net/.well-known/t3/environment",
+                  "https://pair-test.tail.ts.net:8443/.well-known/t3/environment",
                 );
                 return serving
                   ? Response.json(testDescriptor)
@@ -196,7 +196,7 @@ describe("t3 pair", () => {
           );
 
           expect(serving).toBe(true);
-          assert.include(output, "Pairing URL: https://pair-test.tail.ts.net/pair#token=");
+          assert.include(output, "Pairing URL: https://pair-test.tail.ts.net:8443/pair#token=");
         }),
       "::1",
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
@@ -221,9 +221,9 @@ describe("t3 pair", () => {
                   ? '{"BackendState":"Running","Self":{"DNSName":"host-a.tail.ts.net.","TailscaleIPs":["100.64.0.1"],"CapMap":{"https":null}}}'
                   : args[0] === "serve" && args[1] === "status"
                     ? JSON.stringify({
-                        TCP: { "443": { HTTPS: true } },
+                        TCP: { "8443": { HTTPS: true } },
                         Web: {
-                          "host-a.tail.ts.net:443": {
+                          "host-a.tail.ts.net:8443": {
                             Handlers: { "/": { Proxy: otherAppOrigin } },
                           },
                         },
@@ -615,7 +615,10 @@ describe("t3 pair", () => {
             if (String(input) === "http://127.0.0.2:3773/.well-known/t3/environment") {
               return Response.json(testDescriptor);
             }
-            assert.equal(String(input), "https://pair-test.tail.ts.net/.well-known/t3/environment");
+            assert.equal(
+              String(input),
+              "https://pair-test.tail.ts.net:8443/.well-known/t3/environment",
+            );
             return new Response(null, { status: 503 });
           }),
           Effect.flip,
@@ -681,7 +684,10 @@ describe("t3 pair", () => {
             if (String(input) === "http://127.0.0.1:3773/.well-known/t3/environment") {
               return Response.json(testDescriptor);
             }
-            assert.equal(String(input), "https://pair-test.tail.ts.net/.well-known/t3/environment");
+            assert.equal(
+              String(input),
+              "https://pair-test.tail.ts.net:8443/.well-known/t3/environment",
+            );
             return new Response(null, { status: 503 });
           }),
           Effect.flip,

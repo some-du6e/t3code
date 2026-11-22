@@ -525,7 +525,7 @@ const tailscaleFlag = Flag.Boolean("tailscale").pipe(
 const tailscaleServePortFlag = Flag.Int("tailscale-serve-port").pipe(
   Flag.withSchema(PortSchema),
   Flag.withDescription("HTTPS port for Tailscale Serve when --tailscale is enabled."),
-  Flag.withDefault(DEFAULT_TAILSCALE_SERVE_PORT),
+  Flag.withDefault(ServerConfig.DEFAULT_TAILSCALE_SERVE_PORT),
 );
 
 export const pairCommand = Command.make("pair", {

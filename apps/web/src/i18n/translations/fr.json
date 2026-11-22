@@ -6243,7 +6243,7 @@
     "dans ce terminal."
   ],
   "9d9b9624c7bd95df": "Autres dossiers",
-  "1eb8f3d4695033fb": [
+  "2362f8d4f40e6eaa": [
     "Ajouté à ",
     {
       "i": 1,
@@ -6255,16 +6255,16 @@
     {
       "t": "code",
       "i": 2,
-      "c": "t3"
+      "c": "t3red"
     },
     "."
   ],
-  "ad72bb102aa39c31": [
+  "08a2c796eed8787f": [
     "Utilisez ",
     {
       "t": "code",
       "i": 1,
-      "c": "t3"
+      "c": "t3red"
     },
     " depuis n’importe quel terminal. Ajoute une ligne à",
     " ",

@@ -6242,7 +6242,7 @@
     "neste terminal."
   ],
   "9d9b9624c7bd95df": "Outras pastas",
-  "1eb8f3d4695033fb": [
+  "2362f8d4f40e6eaa": [
     "Adicionado a ",
     {
       "i": 1,
@@ -6254,16 +6254,16 @@
     {
       "t": "code",
       "i": 2,
-      "c": "t3"
+      "c": "t3red"
     },
     "."
   ],
-  "ad72bb102aa39c31": [
+  "08a2c796eed8787f": [
     "Use ",
     {
       "t": "code",
       "i": 1,
-      "c": "t3"
+      "c": "t3red"
     },
     " em qualquer terminal. Adiciona uma linha a",
     " ",

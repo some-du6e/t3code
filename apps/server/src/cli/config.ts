@@ -423,7 +423,7 @@ export const resolveServerConfig = Effect.fn("config.resolveServerConfig")(funct
       Option.fromUndefinedOr(env.tailscaleServePort),
       Option.fromUndefinedOr(bootstrap?.tailscaleServePort),
     ),
-    () => 443,
+    () => ServerConfig.DEFAULT_TAILSCALE_SERVE_PORT,
   );
   const staticDir = devUrl ? undefined : yield* ServerConfig.resolveStaticDir();
   const explicitHost = resolveOptionPrecedence(

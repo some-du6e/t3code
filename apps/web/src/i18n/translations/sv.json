@@ -6244,7 +6244,7 @@
     "i den här terminalen."
   ],
   "9d9b9624c7bd95df": "Andra mappar",
-  "1eb8f3d4695033fb": [
+  "2362f8d4f40e6eaa": [
     "Tillagd i ",
     {
       "i": 1,
@@ -6256,16 +6256,16 @@
     {
       "t": "code",
       "i": 2,
-      "c": "t3"
+      "c": "t3red"
     },
     "."
   ],
-  "ad72bb102aa39c31": [
+  "08a2c796eed8787f": [
     "Använd ",
     {
       "t": "code",
       "i": 1,
-      "c": "t3"
+      "c": "t3red"
     },
     " från valfri terminal. Lägger till en rad i",
     " ",

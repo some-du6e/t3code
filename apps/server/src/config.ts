@@ -28,6 +28,8 @@ export const telemetryChannel: ReleaseChannel =
   typeof __T3CODE_TELEMETRY_CHANNEL__ === "undefined" ? "dev" : __T3CODE_TELEMETRY_CHANNEL__;
 
 export const DEFAULT_PORT = 4773;
+// Official T3 Code serves the tailnet on 443, so the fork takes 8443 beside it.
+export const DEFAULT_TAILSCALE_SERVE_PORT = 8443;
 
 export const RuntimeMode = Schema.Literals(["web", "desktop"]);
 export type RuntimeMode = typeof RuntimeMode.Type;

@@ -571,6 +571,8 @@ const resolvePrimaryStartConfig = Effect.fn("desktop.backendConfiguration.resolv
       cwd: environment.backendCwd,
       env: {
         ...backendChildEnvPatch(),
+        // The server prefers T3CODE_HOME to the bootstrap's t3Home; send only one this app uses.
+        T3CODE_HOME: Option.getOrUndefined(environment.configuredBaseDir),
         ELECTRON_RUN_AS_NODE: "1",
         T3CODE_DESKTOP_SHELL_DISCOVERY_PENDING: "1",
         T3CODE_CLI_PATH: Option.getOrUndefined(input.cliPath),
