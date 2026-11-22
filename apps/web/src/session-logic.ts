@@ -1168,6 +1168,8 @@ export function deriveRewindTurnCountByRunId(input: {
   }
   const byRunId = new Map<RunId, number>();
   const seenRunIds = new Set<RunId>();
+  // Rewinding a run keeps a steer sent after its last reply, so that reply offers no rewind.
+  const unansweredRunIds = new Set<RunId>();
   let previousRunId: RunId | null = null;
   for (const entry of input.timelineEntries) {
     if (entry.kind !== "message" && entry.kind !== "work") continue;
@@ -1180,7 +1182,12 @@ export function deriveRewindTurnCountByRunId(input: {
         : entry.entry.itemType === "notification"
           ? entry.entry.runId
           : null;
-    if (runId == null || seenRunIds.has(runId)) continue;
+    if (runId == null) continue;
+    if (entry.kind === "message") {
+      if (entry.message.role === "user") unansweredRunIds.add(runId);
+      if (entry.message.role === "assistant") unansweredRunIds.delete(runId);
+    }
+    if (seenRunIds.has(runId)) continue;
     seenRunIds.add(runId);
     if (previousRunId !== null && previousRunId !== input.unsettledRunId) {
       const target = turnCountByRunId.get(previousRunId);
@@ -1193,6 +1200,7 @@ export function deriveRewindTurnCountByRunId(input: {
     }
     previousRunId = runId;
   }
+  for (const runId of unansweredRunIds) byRunId.delete(runId);
   return byRunId;
 }
 

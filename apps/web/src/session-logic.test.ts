@@ -465,7 +465,21 @@ describe("V2 session presentation", () => {
       expect(findRevertCheckpoint(null, 0)).toBeUndefined();
     });
 
-    it("leaves inherited history uneditable and restores the first local run to thread start", () => {
+    const rewindTargets = (
+      timelineEntries: ReadonlyArray<TimelineEntry>,
+      checkpoints: Parameters<typeof deriveRewindTurnCountByRunId>[0]["checkpoints"],
+      options: { availableRevertTurnCounts?: ReadonlySet<number>; unsettledRunId?: RunId } = {},
+    ) =>
+      Object.fromEntries(
+        deriveRewindTurnCountByRunId({
+          timelineEntries,
+          checkpoints,
+          availableRevertTurnCounts: options.availableRevertTurnCounts,
+          unsettledRunId: options.unsettledRunId ?? null,
+        }),
+      );
+
+    it("leaves inherited history uneditable and unrewindable, and restores the first local run to thread start", () => {
       const fixture = makeStreamingTimelineFixture();
       const inheritedEntries = deriveTimelineEntriesFromVisibleTurnItems({
         visibleTurnItems: fixture.visibleTurnItems
@@ -482,21 +496,13 @@ describe("V2 session presentation", () => {
           }),
         ),
       ).toEqual({ "user-2": 0 });
+      expect(
+        rewindTargets(
+          [...inheritedEntries, ...turn(2), ...turn(3)],
+          [{ ...checkpoint(7), runId: fixture.historyRunId }, checkpoint(2), checkpoint(3)],
+        ),
+      ).toEqual({ "run-2": 2 });
     });
-
-    const rewindTargets = (
-      timelineEntries: ReadonlyArray<TimelineEntry>,
-      checkpoints: Parameters<typeof deriveRewindTurnCountByRunId>[0]["checkpoints"],
-      options: { availableRevertTurnCounts?: ReadonlySet<number>; unsettledRunId?: RunId } = {},
-    ) =>
-      Object.fromEntries(
-        deriveRewindTurnCountByRunId({
-          timelineEntries,
-          checkpoints,
-          availableRevertTurnCounts: options.availableRevertTurnCounts,
-          unsettledRunId: options.unsettledRunId ?? null,
-        }),
-      );
 
     it("rewinds a response to its own run's checkpoint, never the latest run's", () => {
       expect(
@@ -536,18 +542,26 @@ describe("V2 session presentation", () => {
       ).toEqual({ "run-1": 1 });
     });
 
-    it("never rewinds inherited history", () => {
-      const fixture = makeStreamingTimelineFixture();
-      const inheritedEntries = deriveTimelineEntriesFromVisibleTurnItems({
-        visibleTurnItems: fixture.visibleTurnItems
-          .filter(({ item }) => item.runId === fixture.historyRunId)
-          .map((item) => ({ ...item, visibility: "inherited" as const })),
-        optimisticMessages: [],
-      });
+    it("offers no rewind to a run that ends on an unanswered steer", () => {
+      const steer: TimelineEntry = {
+        id: "steer-1",
+        kind: "message",
+        createdAt: "2026-06-20T00:00:01.500Z",
+        message: {
+          id: MessageId.make("steer-1"),
+          role: "user",
+          text: "steer",
+          runId: runId(1),
+          inputIntent: "steer",
+          streaming: false,
+          createdAt: "2026-06-20T00:00:01.500Z",
+          updatedAt: "2026-06-20T00:00:01.500Z",
+        },
+      };
       expect(
         rewindTargets(
-          [...inheritedEntries, ...turn(2), ...turn(3)],
-          [{ ...checkpoint(7), runId: fixture.historyRunId }, checkpoint(2), checkpoint(3)],
+          [...turn(1), steer, ...turn(2), ...turn(3)],
+          [checkpoint(1), checkpoint(2), checkpoint(3)],
         ),
       ).toEqual({ "run-2": 2 });
     });

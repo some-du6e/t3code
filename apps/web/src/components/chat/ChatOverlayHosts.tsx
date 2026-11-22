@@ -354,9 +354,9 @@ export function RewindConfirmHost(
           <AlertDialogDescription>
             {fileRestore === "repositories"
               ? // oxlint-disable-next-line t3code/no-untranslated-copy -- fork-only copy, kept out of the GT catalogs
-                "Remove every turn after this response. Your draft stays in the composer. “Revert repositories too” also puts this thread’s repository worktrees back to how this response left them. Files in the project folder itself stay as they are."
+                "Remove every turn after this response. Your draft stays in the composer. You can also put this thread’s repository worktrees back to how this response left them. Files in the project folder itself stay as they are."
               : // oxlint-disable-next-line t3code/no-untranslated-copy -- fork-only copy, kept out of the GT catalogs
-                "Remove every turn after this response. Your draft stays in the composer. “Revert files too” also puts your files back to how this response left them, undoing later edits."}
+                "Remove every turn after this response. Your draft stays in the composer. You can also put your files back to how this response left them, undoing later edits."}
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>

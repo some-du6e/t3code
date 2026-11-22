@@ -994,6 +994,7 @@ describe("waitForRevertedMessage", () => {
     const { state, projection } = projectionAtom();
     useComposerDraftStore.setState({ draftsByThreadKey: {}, draftThreadsByThreadKey: {} });
     useComposerDraftStore.getState().setPrompt(threadRef, "Unsent draft");
+    const rollbacks: unknown[] = [];
 
     const result = await rewindToResponse({
       environmentId: threadRef.environmentId,
@@ -1002,7 +1003,8 @@ describe("waitForRevertedMessage", () => {
       turnCount: 2,
       restoreFiles: false,
       checkpoint: undefined,
-      revertThreadCheckpoint: async () => {
+      revertThreadCheckpoint: async (request) => {
+        rollbacks.push(request.input);
         appAtomRegistry.set(state, {
           data: Option.some({
             ...projection,
@@ -1020,6 +1022,14 @@ describe("waitForRevertedMessage", () => {
     });
 
     expect(result).toEqual({ error: null });
+    expect(rollbacks).toEqual([
+      {
+        commandId: expect.any(String),
+        threadId: threadRef.threadId,
+        turnCount: 2,
+        restoreFiles: false,
+      },
+    ]);
     expect(useComposerDraftStore.getState().getComposerDraft(threadRef)?.prompt).toBe(
       "Unsent draft",
     );
