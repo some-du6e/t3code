@@ -39,9 +39,29 @@ export interface ThreadCheckpointSummary {
   readonly completedAt: string;
 }
 
+// A rewind hides a run's answers after its tool call; the changed-files card needs a shown one.
+function visibleAnswersOfRewoundRuns(
+  projection: Partial<Pick<OrchestrationV2ThreadProjection, "runs" | "visibleTurnItems">>,
+): ReadonlyMap<RunId, ReadonlySet<MessageId>> {
+  const answers = new Map<RunId, Set<MessageId>>();
+  const { runs, visibleTurnItems } = projection;
+  if (runs === undefined || visibleTurnItems === undefined) return answers;
+  for (const run of runs) {
+    if (run.rewoundAfterOrdinal !== undefined) answers.set(run.id, new Set());
+  }
+  if (answers.size === 0) return answers;
+  for (const { item } of visibleTurnItems) {
+    if (item.type === "assistant_message" && item.runId !== null) {
+      answers.get(item.runId)?.add(item.messageId);
+    }
+  }
+  return answers;
+}
+
 export function deriveThreadCheckpointSummaries(
   projection: Pick<OrchestrationV2ThreadProjection, "checkpoints" | "messages"> &
-    Partial<Pick<OrchestrationV2ThreadProjection, "checkpointScopes">>,
+    Partial<Pick<OrchestrationV2ThreadProjection, "checkpointScopes">> &
+    Partial<Pick<OrchestrationV2ThreadProjection, "runs" | "visibleTurnItems">>,
 ): ReadonlyArray<ThreadCheckpointSummary> {
   const repositoriesByRun =
     projection.checkpointScopes === undefined
@@ -50,6 +70,7 @@ export function deriveThreadCheckpointSummaries(
           checkpoints: projection.checkpoints,
           checkpointScopes: projection.checkpointScopes,
         });
+  const visibleAnswersByRewoundRun = visibleAnswersOfRewoundRuns(projection);
   let assistantMessageIdsByRun: Map<RunId, MessageId | null | undefined> | undefined;
   let nextMessageIndex = -1;
   return projection.checkpoints.flatMap((checkpoint) => {
@@ -73,7 +94,8 @@ export function deriveThreadCheckpointSummaries(
         role === "assistant" &&
         runId !== null &&
         assistantMessageIdsByRun.has(runId) &&
-        assistantMessageIdsByRun.get(runId) === undefined
+        assistantMessageIdsByRun.get(runId) === undefined &&
+        (visibleAnswersByRewoundRun.get(runId)?.has(message.id) ?? true)
       ) {
         assistantMessageIdsByRun.set(runId, message.id ?? null);
       }

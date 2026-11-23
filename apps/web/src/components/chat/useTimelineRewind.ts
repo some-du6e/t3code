@@ -13,6 +13,7 @@ import {
   type ScopedThreadRef,
   type ThreadId,
   type RunId,
+  type TurnItemId,
 } from "@t3tools/contracts";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import { useNavigate } from "@tanstack/react-router";
@@ -186,7 +187,12 @@ export function useTimelineRewind(input: TimelineRewindInput) {
   const onConfirmRevertStable = useStableCallback(onConfirmRevert);
 
   // ChatView's timeline messages carry no assistant rows, so this targets the turn count alone.
-  const onRewindToResponse = async (turnCount: number, restoreFiles?: boolean) => {
+  // A tool call of that turn ends it early instead, with the files left as they are.
+  const onRewindToResponse = async (
+    turnCount: number,
+    restoreFiles?: boolean,
+    afterItemId?: TurnItemId,
+  ) => {
     if (
       !readLocalApi() ||
       !activeThread ||
@@ -224,7 +230,10 @@ export function useTimelineRewind(input: TimelineRewindInput) {
       return;
     }
     if (restoreFiles === undefined) {
-      openRewindConfirm(routeThreadKey, { turnCount });
+      openRewindConfirm(
+        routeThreadKey,
+        afterItemId === undefined ? { turnCount } : { turnCount, afterItemId },
+      );
       return;
     }
 
@@ -238,6 +247,7 @@ export function useTimelineRewind(input: TimelineRewindInput) {
       threadId: activeThread.id,
       turnCount,
       restoreFiles,
+      ...(afterItemId === undefined ? {} : { afterItemId }),
       checkpoint: findRevertCheckpoint(serverProjection, turnCount),
       revertThreadCheckpoint,
     });
@@ -257,9 +267,16 @@ export function useTimelineRewind(input: TimelineRewindInput) {
   const onRewindToResponseStable = useStableCallback((turnCount: number) => {
     void onRewindToResponse(turnCount);
   });
-  const onConfirmRewindStable = useStableCallback((turnCount: number, restoreFiles: boolean) => {
-    void onRewindToResponse(turnCount, restoreFiles);
-  });
+  const onRewindToToolCallStable = useStableCallback(
+    (target: { readonly turnCount: number; readonly itemId: TurnItemId }) => {
+      void onRewindToResponse(target.turnCount, undefined, target.itemId);
+    },
+  );
+  const onConfirmRewindStable = useStableCallback(
+    (turnCount: number, restoreFiles: boolean, afterItemId?: TurnItemId) => {
+      void onRewindToResponse(turnCount, restoreFiles, afterItemId);
+    },
+  );
 
   const onForkFromRun = async (input: {
     readonly sourceThreadId: ThreadId;
@@ -315,5 +332,6 @@ export function useTimelineRewind(input: TimelineRewindInput) {
     onForkFromRunStable,
     onRevertTimelineTurnStable,
     onRewindToResponseStable,
+    onRewindToToolCallStable,
   };
 }

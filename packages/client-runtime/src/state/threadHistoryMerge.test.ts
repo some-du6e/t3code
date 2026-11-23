@@ -252,6 +252,44 @@ describe("threadHistoryMerge", () => {
     expect(merged.visibleTurnItems).toEqual([]);
   });
 
+  it("does not bring back rows a rewind cut while an older page was in flight", () => {
+    const runId = "rewound-run" as never;
+    const ofRun = (index: number) => ({ ...row(index), item: { ...row(index).item, runId } });
+    const projection = {
+      ...v2Projection,
+      runs: [
+        {
+          id: runId,
+          threadId: v2ThreadId,
+          ordinal: 1,
+          providerInstanceId: v2Projection.thread.providerInstanceId,
+          modelSelection: v2Projection.thread.modelSelection,
+          providerThreadId: null,
+          userMessageId: "rewound-message" as never,
+          rootNodeId: null,
+          activeAttemptId: null,
+          status: "completed" as const,
+          requestedAt: NOW,
+          startedAt: NOW,
+          completedAt: NOW,
+          checkpointId: null,
+          contextHandoffId: null,
+          rewoundAfterOrdinal: row(1).item.ordinal,
+        },
+      ],
+      turnItems: [row(5).item],
+      visibleTurnItems: [{ ...row(5), position: 0 }],
+    };
+
+    const merged = mergeOlderHistoryIntoProjection(projection, [row(0), ofRun(1), ofRun(2)]);
+
+    expect(merged.visibleTurnItems.map((entry) => entry.sourceItemId)).toEqual([
+      "item-0",
+      "item-1",
+      "item-5",
+    ]);
+  });
+
   it("retains merged older rows when a live turn-item update arrives", () => {
     const recent = [row(2), row(3)];
     const projection = {

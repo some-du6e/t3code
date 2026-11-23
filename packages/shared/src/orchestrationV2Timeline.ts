@@ -5,11 +5,48 @@ import type {
   OrchestrationV2UserMessageInputIntent,
 } from "@t3tools/contracts";
 
-type TimelineRun = Pick<OrchestrationV2Run, "id" | "status">;
+type TimelineRun = Pick<OrchestrationV2Run, "id" | "status" | "rewoundAfterOrdinal">;
 type TimelineRunAttempt = Pick<OrchestrationV2RunAttempt, "runId" | "rootNodeId" | "status">;
 type TimelineTurnItem = Pick<OrchestrationV2TurnItem, "type" | "runId" | "nodeId"> & {
+  /** Without it, a rewind to a tool call cannot hide the item. */
+  readonly ordinal?: number;
   readonly inputIntent?: OrchestrationV2UserMessageInputIntent;
 };
+
+const REWINDABLE_TOOL_CALL_TYPES: ReadonlySet<OrchestrationV2TurnItem["type"]> = new Set([
+  "command_execution",
+  "dynamic_tool",
+  "file_change",
+  "file_search",
+  "web_search",
+]);
+
+/** The native id of a finished tool call of the agent itself, where a rewind can end a turn. */
+export function orchestrationV2RewindableToolCallId(
+  item: Pick<OrchestrationV2TurnItem, "type" | "status" | "parentItemId" | "nativeItemRef">,
+): string | null {
+  return item.parentItemId === null &&
+    REWINDABLE_TOOL_CALL_TYPES.has(item.type) &&
+    (item.status === "completed" || item.status === "failed")
+    ? (item.nativeItemRef?.nativeId ?? null)
+    : null;
+}
+
+/**
+ * Removed from the conversation by a rewind to one of its run's tool calls. The run's
+ * checkpoint stays: the files that run changed are still on disk.
+ */
+export function isOrchestrationV2RewoundAway(
+  rewoundAfterOrdinal: number | undefined,
+  item: Pick<TimelineTurnItem, "type" | "ordinal">,
+): boolean {
+  return (
+    rewoundAfterOrdinal !== undefined &&
+    item.ordinal !== undefined &&
+    item.ordinal > rewoundAfterOrdinal &&
+    item.type !== "checkpoint"
+  );
+}
 
 function isOrchestrationV2SupersededInterrupt(input: {
   readonly item: TimelineTurnItem;
@@ -45,9 +82,11 @@ export function isOrchestrationV2TurnItemVisible(input: {
   readonly items: ReadonlyArray<TimelineTurnItem>;
 }): boolean {
   const { item } = input;
+  const run =
+    item.runId === null ? undefined : input.runs.find((candidate) => candidate.id === item.runId);
   if (
-    item.runId !== null &&
-    input.runs.some((run) => run.id === item.runId && run.status === "rolled_back")
+    run?.status === "rolled_back" ||
+    isOrchestrationV2RewoundAway(run?.rewoundAfterOrdinal, item)
   ) {
     return false;
   }
@@ -78,10 +117,13 @@ export function createOrchestrationV2TurnItemVisibility(input: {
   readonly items: ReadonlyArray<TimelineTurnItem>;
 }): (item: TimelineTurnItem) => boolean {
   const statuses = new Map<TimelineRun["id"], TimelineRun["status"]>();
+  const rewoundAfter = new Map<TimelineRun["id"], number>();
   for (const run of input.runs) {
     if (run.status === "rolled_back" || run.status === "cancelled" || run.status === "queued")
       statuses.set(run.id, run.status);
     else statuses.delete(run.id);
+    if (run.rewoundAfterOrdinal === undefined) rewoundAfter.delete(run.id);
+    else rewoundAfter.set(run.id, run.rewoundAfterOrdinal);
   }
   const supersededRoots = new Map<
     TimelineRunAttempt["runId"],
@@ -93,7 +135,8 @@ export function createOrchestrationV2TurnItemVisibility(input: {
     if (roots === undefined) supersededRoots.set(attempt.runId, (roots = new Set()));
     roots.add(attempt.rootNodeId);
   }
-  if (statuses.size === 0 && supersededRoots.size === 0) return () => true;
+  if (statuses.size === 0 && supersededRoots.size === 0 && rewoundAfter.size === 0)
+    return () => true;
   const interruptRuns = new Set<TimelineTurnItem["runId"]>();
   if (supersededRoots.size > 0) {
     for (const item of input.items) {
@@ -103,6 +146,8 @@ export function createOrchestrationV2TurnItemVisibility(input: {
   return (item) => {
     const status = item.runId === null ? undefined : statuses.get(item.runId);
     if (status === "rolled_back") return false;
+    if (item.runId !== null && isOrchestrationV2RewoundAway(rewoundAfter.get(item.runId), item))
+      return false;
     if (
       (status === "queued" || status === "cancelled") &&
       item.type === "user_message" &&

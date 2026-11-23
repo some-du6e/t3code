@@ -213,6 +213,12 @@ after it. Your draft stays in the composer. As with **Edit from here**, choose
 how that response left them. To keep the later turns, use **Fork from this response**, which
 starts a new thread from that response.
 
+In Claude threads you can also rewind to a single tool call: hover a command or other tool call
+in the work log and choose **Rewind to here**. Everything the agent did after that call is
+removed, and your next message picks up from the call's result. Tool calls made at the same time
+stay together. Files stay as they are, because only the end of a response has a snapshot to put
+them back to.
+
 ## Prompt stash
 
 On web and desktop, press `Cmd+S` on macOS or `Ctrl+S` on Windows and Linux to save

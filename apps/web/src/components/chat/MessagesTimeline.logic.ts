@@ -37,6 +37,7 @@ import {
 import {
   deriveRevertTurnCountByUserMessageId,
   deriveRewindTurnCountByRunId,
+  deriveToolCallRewindTurnCounts,
   isStreamingMessageTextUpdate,
   isStreamingTurnItemTextUpdate,
   timelineEntryIsPersistentResourceCard,
@@ -1315,6 +1316,30 @@ function deriveTurnFolds(input: {
   return foldsByAnchorEntryId;
 }
 
+const toolCallRewindEntries = new WeakMap<WorkLogEntry, WorkLogEntry>();
+
+function withToolCallRewinds(
+  rows: MessagesTimelineRow[],
+  turnCounts: ReadonlyMap<string, number>,
+): MessagesTimelineRow[] {
+  if (turnCounts.size === 0) return rows;
+  return rows.map((row) => {
+    if (row.kind !== "work" || !row.groupedEntries.some((entry) => turnCounts.has(entry.id))) {
+      return row;
+    }
+    const groupedEntries = row.groupedEntries.map((entry) => {
+      const rewindTurnCount = turnCounts.get(entry.id);
+      if (rewindTurnCount === undefined) return entry;
+      const previous = toolCallRewindEntries.get(entry);
+      if (previous?.rewindTurnCount === rewindTurnCount) return previous;
+      const withRewind = { ...entry, rewindTurnCount };
+      toolCallRewindEntries.set(entry, withRewind);
+      return withRewind;
+    });
+    return { ...row, groupedEntries };
+  });
+}
+
 function attachTrailingToolGroupsToAssistant(
   rows: ReadonlyArray<MessagesTimelineRow>,
 ): MessagesTimelineRow[] {
@@ -1626,6 +1651,8 @@ export function deriveMessagesTimelineRows(
     activeTurnStartedAt?: string | null;
     turnDiffSummaries: ReadonlyArray<TurnDiffSummary>;
     supportsConversationRollback: boolean;
+    /** The provider can also end a turn after one of its tool calls. */
+    supportsToolCallRewind?: boolean;
     threadStartCheckpointAvailable?: boolean;
     availableRevertTurnCounts?: ReadonlySet<number> | undefined;
     worktreeSetup?: WorktreeSetupSnapshot | null;
@@ -1672,6 +1699,15 @@ export function deriveMessagesTimelineRows(
         availableRevertTurnCounts: input.availableRevertTurnCounts,
       })
     : new Map<RunId, number>();
+  const toolCallRewindTurnCounts =
+    input.supportsConversationRollback && input.supportsToolCallRewind === true
+      ? deriveToolCallRewindTurnCounts({
+          timelineEntries: input.timelineEntries,
+          checkpoints: input.turnDiffSummaries,
+          unsettledRunId,
+          availableRevertTurnCounts: input.availableRevertTurnCounts,
+        })
+      : new Map<string, number>();
   const nextRows: MessagesTimelineRow[] = [];
   const terminalAssistantMessageIds = deriveTerminalAssistantMessageIds(timelineEntries);
   const failedRunIds = failedTimelineRunIds(timelineEntries, input.latestRun ?? null);
@@ -2434,8 +2470,11 @@ export function deriveMessagesTimelineRows(
     }
   }
 
-  const result = attachTrailingToolGroupsToAssistant(
-    attachCreatedThreadSummaries(nextRows, timelineEntries, collapsedFoldMemberIds),
+  const result = withToolCallRewinds(
+    attachTrailingToolGroupsToAssistant(
+      attachCreatedThreadSummaries(nextRows, timelineEntries, collapsedFoldMemberIds),
+    ),
+    toolCallRewindTurnCounts,
   );
   return result.map((row, index) => {
     if (timelineRowIsWorkLog(row) && timelineRowIsWorkLog(result[index + 1])) {

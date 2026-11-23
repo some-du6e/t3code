@@ -24,7 +24,10 @@ import {
   selectHistory,
 } from "@t3tools/provider-core/server/handoffBudget";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
-import { createOrchestrationV2TurnItemVisibility } from "@t3tools/shared/orchestrationV2Timeline";
+import {
+  createOrchestrationV2TurnItemVisibility,
+  isOrchestrationV2RewoundAway,
+} from "@t3tools/shared/orchestrationV2Timeline";
 import type { ProjectionStoreV2Shape } from "./ProjectionStore.ts";
 
 export class ContextHandoffPrepareError extends Schema.TaggedError<ContextHandoffPrepareError>()(
@@ -78,7 +81,7 @@ export interface ContextHandoffServiceV2Shape {
     readonly fromProviderInstanceId: ProviderInstanceId;
     readonly toProviderInstanceId: ProviderInstanceId;
     readonly coveredRunOrdinals: OrchestrationV2ContextHandoff["coveredRunOrdinals"];
-    readonly runs?: ReadonlyArray<OrchestrationV2Run>;
+    readonly runs: ReadonlyArray<OrchestrationV2Run>;
     readonly strategy: Extract<
       OrchestrationV2ContextHandoff["strategy"],
       "delta_since_target_last_seen" | "full_thread_summary"
@@ -497,7 +500,7 @@ const makeContextHandoffService = Effect.fn("orchestrationV2.ContextHandoffServi
       readonly fromProviderInstanceId: ProviderInstanceId;
       readonly toProviderInstanceId: ProviderInstanceId;
       readonly coveredRunOrdinals: OrchestrationV2ContextHandoff["coveredRunOrdinals"];
-      readonly runs?: ReadonlyArray<OrchestrationV2Run>;
+      readonly runs: ReadonlyArray<OrchestrationV2Run>;
       readonly strategy: Extract<
         OrchestrationV2ContextHandoff["strategy"],
         "delta_since_target_last_seen" | "full_thread_summary"
@@ -523,20 +526,27 @@ const makeContextHandoffService = Effect.fn("orchestrationV2.ContextHandoffServi
               }),
           ),
         );
-      const runStatuses = new Map(input.runs?.map((run) => [run.id, run.status]));
+      const runsById = new Map(input.runs.map((run) => [run.id, run]));
+      // A tool-call rewind keeps its run's status, so a status filter keeps what it removed.
+      const items = input.items.filter(
+        (item) =>
+          item.runId === null ||
+          !isOrchestrationV2RewoundAway(runsById.get(item.runId)?.rewoundAfterOrdinal, item),
+      );
       const coverage = handoffCoverage({
         ...input,
+        items,
         threadId: input.sourceThreadId ?? input.threadId,
       });
       const selected = selectHistory({
-        messages: input.items.flatMap((item) => {
+        messages: items.flatMap((item) => {
           const message = historicalMessage(item);
           return message === null
             ? []
             : [
                 {
                   ...message,
-                  ...(item.runId === null ? {} : { runStatus: runStatuses.get(item.runId) }),
+                  ...(item.runId === null ? {} : { runStatus: runsById.get(item.runId)?.status }),
                 },
               ];
         }),

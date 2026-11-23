@@ -28,6 +28,7 @@ import {
   type RuntimeRequestId,
   type ThreadId,
   type ThreadEnvMode,
+  type TurnItemId,
   type UploadChatAttachment,
   type GuestMessageId,
 } from "@t3tools/contracts";
@@ -240,6 +241,8 @@ export interface RevertThreadCheckpointInput extends ThreadCommandInput {
   readonly checkpointId?: string;
   readonly scopeId?: string;
   readonly turnCount?: number;
+  /** A tool call of the turn: the conversation then ends after it, with the files left as they are. */
+  readonly afterItemId?: TurnItemId;
 }
 
 export type StopThreadSessionInput = ThreadCommandInput;
@@ -1047,6 +1050,7 @@ export const revertThreadCheckpoint = Effect.fn("EnvironmentCommands.revertThrea
         threadId: input.threadId,
         scopeId: CheckpointScopeId.make(input.scopeId),
         checkpointId: CheckpointId.make(input.checkpointId),
+        ...(input.afterItemId === undefined ? {} : { afterItemId: input.afterItemId }),
       });
     }
     const projection = yield* getProjection(input.threadId);
@@ -1085,6 +1089,7 @@ export const revertThreadCheckpoint = Effect.fn("EnvironmentCommands.revertThrea
       threadId: input.threadId,
       scopeId: checkpoint.scopeId,
       checkpointId: checkpoint.id,
+      ...(input.afterItemId === undefined ? {} : { afterItemId: input.afterItemId }),
     });
   },
 );

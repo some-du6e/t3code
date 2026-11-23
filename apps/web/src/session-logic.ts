@@ -19,6 +19,7 @@ import {
 } from "@t3tools/contracts";
 import { extractToolActivityPresentation } from "@t3tools/client-runtime/work-log/tool-presentation";
 import { classifyToolActivity, collectToolFilePaths } from "@t3tools/shared/toolActivity";
+import { orchestrationV2RewindableToolCallId } from "@t3tools/shared/orchestrationV2Timeline";
 import { formatReadToolLabel, formatSearchToolLabel } from "@t3tools/shared/toolActivityCopy";
 import type { HtmlRenderReference } from "@t3tools/shared/htmlRender";
 import { turnItemDetailRevision } from "@t3tools/client-runtime/work-log/item-detail";
@@ -95,6 +96,8 @@ export interface WorkLogEntry {
   readonly structuredPayload?: OrchestrationV2TurnItem;
   readonly sourceItemType?: OrchestrationV2TurnItem["type"];
   readonly projectedItem?: OrchestrationV2ProjectedTurnItem;
+  /** The turn count of the run this tool call can end, when "Rewind to here" can stop there. */
+  readonly rewindTurnCount?: number;
 }
 
 export type PendingApproval = ThreadPendingApproval;
@@ -1202,6 +1205,48 @@ export function deriveRewindTurnCountByRunId(input: {
   }
   for (const runId of unansweredRunIds) byRunId.delete(runId);
   return byRunId;
+}
+
+/**
+ * The finished tool calls of settled runs a rewind can end their run after, by work entry id,
+ * with the run's turn count. The last entry has nothing after it to remove, and Claude no longer
+ * reads the calls before a compaction.
+ */
+export function deriveToolCallRewindTurnCounts(input: {
+  readonly timelineEntries: ReadonlyArray<TimelineEntry>;
+  readonly checkpoints: ReadonlyArray<ThreadCheckpointSummary>;
+  readonly availableRevertTurnCounts?: ReadonlySet<number> | undefined;
+  readonly unsettledRunId?: RunId | null;
+}): Map<string, number> {
+  const turnCountByRunId = new Map<RunId, number>();
+  for (const checkpoint of input.checkpoints) {
+    if (
+      isRewindableCheckpoint(checkpoint) &&
+      (input.availableRevertTurnCounts === undefined ||
+        input.availableRevertTurnCounts.has(checkpoint.checkpointTurnCount))
+    ) {
+      turnCountByRunId.set(checkpoint.runId, checkpoint.checkpointTurnCount);
+    }
+  }
+  const byEntryId = new Map<string, number>();
+  let lastEntryId: string | null = null;
+  for (const entry of input.timelineEntries) {
+    if (entry.kind === "message") lastEntryId = null;
+    if (entry.kind !== "work") continue;
+    lastEntryId = entry.entry.id;
+    if (entry.entry.itemType === "compaction") byEntryId.clear();
+    const item = entry.entry.projectedItem;
+    // Inherited history belongs to the thread it was forked from.
+    if (item === undefined || item.visibility !== "local") continue;
+    const runId = item.item.runId;
+    if (runId === null || runId === input.unsettledRunId) continue;
+    const turnCount = turnCountByRunId.get(runId);
+    if (turnCount !== undefined && orchestrationV2RewindableToolCallId(item.item) !== null) {
+      byEntryId.set(entry.entry.id, turnCount);
+    }
+  }
+  if (lastEntryId !== null) byEntryId.delete(lastEntryId);
+  return byEntryId;
 }
 
 // A missing snapshot (no git, or a side chat) still pins a conversation position; only

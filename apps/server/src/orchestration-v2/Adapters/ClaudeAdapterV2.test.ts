@@ -346,6 +346,148 @@ describe("ClaudeAdapterV2 native resume history", () => {
   });
 });
 
+describe("ClaudeAdapterV2 rewind to a tool call", () => {
+  const entry = (uuid: string, type: string, content: unknown, parentToolUseId?: string) => ({
+    uuid,
+    type,
+    ...(parentToolUseId === undefined ? {} : { parent_tool_use_id: parentToolUseId }),
+    message: { content },
+  });
+  const call = (uuid: string, ids: ReadonlyArray<string>, parentToolUseId?: string) =>
+    entry(
+      uuid,
+      "assistant",
+      ids.map((id) => ({ type: "tool_use", id, name: "Bash", input: {} })),
+      parentToolUseId,
+    );
+  const result = (uuid: string, id: string, parentToolUseId?: string) =>
+    entry(uuid, "user", [{ type: "tool_result", tool_use_id: id, content: "ok" }], parentToolUseId);
+  // Claude Code writes each block of a response as its own entry, under the response's id.
+  const streamed = (uuid: string, id: string, name = "Bash", response = "msg-batch") => ({
+    uuid,
+    type: "assistant",
+    message: { id: response, content: [{ type: "tool_use", id, name, input: {} }] },
+  });
+  const transcript = [
+    entry("prompt", "user", "Run pwd three ways"),
+    call("call-bash", ["bash"]),
+    result("result-bash", "bash"),
+    // Two calls made together, answered out of order.
+    call("call-batch", ["powershell", "cmd"]),
+    result("result-cmd", "cmd"),
+    result("result-powershell", "powershell"),
+    call("call-task", ["task"]),
+    call("subagent-call", ["inner"], "task"),
+    result("subagent-result", "inner", "task"),
+    result("result-task", "task"),
+    entry("reply", "assistant", [{ type: "text", text: "All three match." }]),
+  ];
+  const reply = transcript[10]!;
+  it.each([
+    { toolUseId: "bash", head: "result-bash", kept: ["bash"], response: ["bash"] },
+    {
+      toolUseId: "powershell",
+      head: "result-powershell",
+      kept: ["bash", "powershell", "cmd"],
+      response: ["powershell", "cmd"],
+    },
+    {
+      toolUseId: "cmd",
+      head: "result-powershell",
+      kept: ["bash", "powershell", "cmd"],
+      response: ["powershell", "cmd"],
+    },
+    {
+      toolUseId: "task",
+      head: "result-task",
+      kept: ["bash", "powershell", "cmd", "task"],
+      response: ["task"],
+    },
+    // A result can land before the next call of the same response is written.
+    {
+      toolUseId: "read",
+      messages: [
+        streamed("call-read", "read"),
+        result("result-read", "read"),
+        streamed("call-grep", "grep"),
+        result("result-grep", "grep"),
+        reply,
+      ],
+      head: "result-grep",
+      kept: ["read", "grep"],
+      response: ["read", "grep"],
+    },
+    {
+      toolUseId: "pwd",
+      messages: [
+        streamed("call-ls", "ls"),
+        streamed("call-pwd", "pwd"),
+        result("result-pwd", "pwd"),
+        streamed("call-env", "env"),
+        result("result-ls", "ls"),
+        result("result-env", "env"),
+        reply,
+      ],
+      head: "result-env",
+      kept: ["ls", "pwd", "env"],
+      response: ["ls", "pwd", "env"],
+    },
+    // An earlier response's agent call is kept, but did not launch anything in this response.
+    {
+      toolUseId: "scan",
+      messages: [
+        streamed("call-review", "review", "Agent", "msg-earlier"),
+        result("result-review", "review"),
+        streamed("call-scan", "scan"),
+        streamed("call-explore", "explore", "Agent"),
+        result("result-scan", "scan"),
+        result("result-explore", "explore"),
+        reply,
+      ],
+      head: "result-explore",
+      kept: ["review", "scan", "explore"],
+      response: ["scan", "explore"],
+    },
+    // Stop killed the CLI before a later call of the response wrote its result.
+    {
+      toolUseId: "read",
+      messages: [
+        streamed("call-read", "read"),
+        result("result-read", "read"),
+        streamed("call-bash", "bash"),
+      ],
+      head: "result-read",
+      kept: ["read"],
+      response: ["read"],
+    },
+  ])(
+    "keeps the conversation through $toolUseId to $head",
+    ({ messages = transcript, toolUseId, head, kept, response }) => {
+      assert.deepStrictEqual(ClaudeAdapterV2.claudeToolCallRewindPoint(messages, toolUseId), {
+        resumeSessionAt: head,
+        keptToolUseIds: kept,
+        responseCallIds: response,
+      });
+    },
+  );
+  it.each([
+    { name: "an unknown call", messages: transcript, toolUseId: "missing" },
+    { name: "a subagent's own call", messages: transcript, toolUseId: "inner" },
+    {
+      name: "a batch Claude answered before every result came back",
+      messages: [call("call", ["a", "b"]), result("result-a", "a"), reply],
+      toolUseId: "a",
+    },
+    {
+      name: "a call made beside the target that never got a result",
+      messages: [streamed("call-read", "read"), streamed("call-bash", "bash"), result("r", "read")],
+      toolUseId: "read",
+    },
+  ])("finds no point for $name", ({ messages, toolUseId }) => {
+    assert.equal(ClaudeAdapterV2.claudeToolCallRewindPoint(messages, toolUseId), null);
+  });
+});
+
 describe("ClaudeAdapterV2 runtime query policy", () => {
   it.each([
     "-- --thinking-display omitted",
@@ -3776,6 +3918,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     readonly modelCatalog?: Effect.Effect<ClaudeModelCatalog>;
     readonly freshQueueOnReopen?: boolean;
     readonly forkSession?: ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerShape["forkSession"];
+    readonly sessionMessages?: ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerShape["sessionMessages"];
     readonly allocateSessionId?: Effect.Effect<string>;
     readonly offer?: (message: SDKUserMessage) => Effect.Effect<void>;
     readonly promptSuggestions?: boolean;
@@ -3964,6 +4107,9 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           forkSession: options?.forkSession ?? (() => Effect.die("unused forkSession")),
           subagentLaunchToolUseId: () => Effect.succeed(options?.subagentLaunchToolUseId ?? null),
           subagentModel: () => Effect.succeed(options?.subagentModel ?? null),
+          ...(options?.sessionMessages === undefined
+            ? {}
+            : { sessionMessages: options.sessionMessages }),
           assertComplete: Effect.void,
         },
       });
@@ -9348,6 +9494,166 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           ),
         ),
       ),
+  );
+
+  it.effect(
+    "rewinds to a tool call only when the transcript holds it, and the close keeps the cut",
+    () =>
+      Effect.gen(function* () {
+        let closes = 0;
+        const cut = "launch-result";
+        const harness = yield* makeWakeHarnessWithOptions({
+          close: (sdkMessages) =>
+            Effect.sync(() => {
+              closes++;
+            }).pipe(Effect.andThen(Queue.shutdown(sdkMessages))),
+          // After a restart, only a subagent's own transcript names the call that launched it.
+          subagentLaunchToolUseId: WAKE_TOOL_USE_ID,
+          sessionMessages: () =>
+            Effect.succeed([
+              {
+                type: "assistant",
+                uuid: "launch",
+                message: {
+                  id: "msg-launch",
+                  content: [{ type: "tool_use", id: WAKE_TOOL_USE_ID, name: "Bash", input: {} }],
+                },
+              },
+              {
+                type: "user",
+                uuid: cut,
+                message: {
+                  content: [{ type: "tool_result", tool_use_id: WAKE_TOOL_USE_ID, content: "ok" }],
+                },
+              },
+            ]),
+        });
+        yield* harness.runtime.startTurn(
+          makeClaudeTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now: yield* DateTime.now,
+            attemptId: RunAttemptId.make("attempt-claude-tool-call-rewind"),
+            text: "Run the build in the background.",
+            attachments: [],
+          }),
+        );
+        yield* Queue.offer(harness.sdkMessages, wakeTaskStarted);
+        yield* Queue.offer(harness.sdkMessages, turnOneResult);
+        assert.equal((yield* Queue.take(harness.terminalReceipts)).status, "completed");
+        const completed = harness.events.findLast(
+          (event) => event.type === "provider_thread.updated",
+        );
+        assert.equal(completed?.type, "provider_thread.updated");
+        if (completed?.type !== "provider_thread.updated") return;
+        const providerTurn = lastProviderTurn(harness.events);
+        const rewindTo = (nativeItemId: string) =>
+          harness.runtime.rollbackThread({
+            providerThread: completed.providerThread,
+            target: {
+              type: "provider_turn",
+              checkpointId: CheckpointId.make("checkpoint-claude-tool-call-rewind"),
+              appRunOrdinal: 1,
+              providerTurn,
+              afterToolCall: { nativeItemId, subagentIds: ["agent-launched-by-the-call"] },
+            },
+            providerThreadTurns: [providerTurn],
+          });
+
+        // Retrying cannot bring the call back, and the build must keep running.
+        const missing = yield* rewindTo("toolu_not_in_transcript").pipe(Effect.flip);
+        assert.instanceOf(missing, ProviderAdapter.ProviderAdapterRollbackThreadError);
+        assert.equal(missing.reason, "target-unavailable");
+        assert.equal(closes, 0);
+        assert.isTrue(yield* harness.hasPendingBackgroundWork);
+
+        const seen = harness.events.length;
+        const rewound = yield* rewindTo(WAKE_TOOL_USE_ID);
+        assert.equal(closes, 1);
+        assert.deepStrictEqual(rewound.providerThread.pendingBackgroundTasks, []);
+        assert.deepStrictEqual(rewound.keptToolCallIds, [
+          WAKE_TOOL_USE_ID,
+          "agent-launched-by-the-call",
+        ]);
+        // The roster update the close publishes can land after the rewind's own write.
+        const updates = () =>
+          harness.events
+            .slice(seen)
+            .flatMap((event) =>
+              event.type === "provider_thread.updated" ? [event.providerThread] : [],
+            );
+        yield* harness.until(() => updates().length > 0);
+        for (const update of updates()) {
+          assert.equal(update.nativeConversationHeadRef?.nativeId, cut);
+        }
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            NodeCrypto.layer,
+          ),
+        ),
+      ),
+  );
+
+  it.effect("a rewind to a response returns the roster its close left", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeRollbackHarness;
+      yield* harness.runtime.startTurn(
+        makeClaudeTestTurnInput({
+          threadId: harness.threadId,
+          providerThread: harness.providerThread,
+          now: yield* DateTime.now,
+          attemptId: RunAttemptId.make("attempt-claude-response-rewind"),
+          text: "Run the build in the background.",
+          attachments: [],
+        }),
+      );
+      yield* Queue.offerAll(harness.sdkMessages, [
+        wakeTaskStarted,
+        makeAssistantTextFrame({ uuid: "build-started", text: "The build is running." }),
+        turnOneResult,
+      ]);
+      assert.equal((yield* Queue.take(harness.terminalReceipts)).status, "completed");
+      const completed = harness.events.findLast(
+        (event) => event.type === "provider_thread.updated",
+      );
+      assert.equal(completed?.type, "provider_thread.updated");
+      if (completed?.type !== "provider_thread.updated") return;
+      assert.equal(completed.providerThread.pendingBackgroundTasks?.[0]?.taskId, WAKE_TASK_ID);
+
+      const providerTurn = lastProviderTurn(harness.events);
+      const rolledBack = yield* harness.runtime.rollbackThread({
+        providerThread: completed.providerThread,
+        target: {
+          type: "provider_turn",
+          checkpointId: CheckpointId.make("checkpoint-claude-response-rewind"),
+          appRunOrdinal: 1,
+          providerTurn,
+        },
+        providerThreadTurns: [
+          providerTurn,
+          {
+            ...providerTurn,
+            id: ProviderTurnId.make("provider-turn-claude-response-next"),
+            ordinal: 2,
+          },
+        ],
+      });
+      // The close ended the build, so the roster the rewind writes back must not list it.
+      assert.deepStrictEqual(rolledBack.providerThread.pendingBackgroundTasks, []);
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          NodeCrypto.layer,
+        ),
+      ),
+    ),
   );
 
   it.effect("an interrupted turn after a rollback stops resuming at the rolled-back head", () =>

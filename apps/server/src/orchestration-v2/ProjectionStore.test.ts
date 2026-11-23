@@ -4674,6 +4674,22 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
             `${query}\n${plan.join("\n")}`,
           );
         }
+        // This thread was never rewound, so no run has a cut and the status index finds the runs
+        // that hide rows.
+        const hidingRunReads = pageStatements.filter(([query]) =>
+          query.includes("AS rewound_after_ordinal"),
+        );
+        assert.isNotEmpty(hidingRunReads);
+        for (const [query, params] of hidingRunReads) {
+          const plan = copy
+            .prepare(`EXPLAIN QUERY PLAN ${query}`)
+            .all(...(params as ReadonlyArray<NodeSqlite.SQLInputValue>))
+            .map((row) => String(row.detail));
+          assert.isTrue(
+            plan.some((detail) => detail.includes("status=?")),
+            `${query}\n${plan.join("\n")}`,
+          );
+        }
         const rowReads = pageStatements.filter((statement) => !countsPositions(statement));
         const rowReadSteps = () =>
           rowReads.reduce((steps, [query, params]) => {
@@ -4693,21 +4709,43 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
         UPDATE orchestration_v2_projection_runs
         SET status = ${status}, payload_json = json_set(payload_json, '$.status', ${status})
         WHERE thread_id = ${threadId} AND ordinal BETWEEN 100 AND 109`;
+      const shiftedPositions = Effect.gen(function* () {
+        const shiftedPage = yield* historyPage(threadId, olderCursor);
+        const shiftedTimeline = yield* committed(
+          projectionStore.getTimelinePage(threadId, {
+            afterPosition: 900,
+            limit: 1,
+            view: "activity",
+          }),
+        );
+        return [
+          decodeThreadHistoryCursor(shiftedPage.nextCursor!).p,
+          shiftedTimeline.totalItems,
+          shiftedTimeline.items[0]?.item.ordinal,
+        ];
+      });
       yield* setOldRunStatus("rolled_back");
-      const shiftedPage = yield* historyPage(threadId, olderCursor);
-      assert.strictEqual(decodeThreadHistoryCursor(shiftedPage.nextCursor!).p, 904);
-      const shiftedTimeline = yield* committed(
-        projectionStore.getTimelinePage(threadId, {
-          afterPosition: 900,
-          limit: 1,
-          view: "activity",
-        }),
-      );
-      assert.deepEqual(
-        [shiftedTimeline.totalItems, shiftedTimeline.items[0]?.item.ordinal],
-        [990, 912],
-      );
+      assert.deepEqual(yield* shiftedPositions, [904, 990, 912]);
       yield* setOldRunStatus("completed");
+      // So do the rows after a rewind to an earlier tool call of their run. A rewind records its
+      // request on the thread first, and a page reads run cuts only for such a thread.
+      yield* sql`
+        UPDATE orchestration_v2_projection_threads
+        SET payload_json = json_set(payload_json, '$.rollbackRequestId', 'command:rewind')
+        WHERE thread_id = ${threadId}`;
+      yield* sql`
+        UPDATE orchestration_v2_projection_runs
+        SET payload_json = json_set(payload_json, '$.rewoundAfterOrdinal', ordinal - 1)
+        WHERE thread_id = ${threadId} AND ordinal BETWEEN 100 AND 109`;
+      assert.deepEqual(yield* shiftedPositions, [904, 990, 912]);
+      yield* sql`
+        UPDATE orchestration_v2_projection_threads
+        SET payload_json = json_remove(payload_json, '$.rollbackRequestId')
+        WHERE thread_id = ${threadId}`;
+      yield* sql`
+        UPDATE orchestration_v2_projection_runs
+        SET payload_json = json_remove(payload_json, '$.rewoundAfterOrdinal')
+        WHERE thread_id = ${threadId} AND ordinal BETWEEN 100 AND 109`;
 
       const retainedRequestPlan = yield* sql<{ readonly detail: string }>`
         EXPLAIN QUERY PLAN
@@ -10579,6 +10617,7 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
             completedAt: now,
             checkpointId: null,
             contextHandoffId: null,
+            ...(ordinal === 2 ? { rewoundAfterOrdinal: 201 } : {}),
           },
         });
         yield* projectionStore.apply({
@@ -10759,6 +10798,43 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
           ["synthetic", "fork", "Forked from conversation"],
         ],
       );
+      // Run two's cut at ordinal 201 still hides what came after it once the run is rolled back.
+      yield* projectionStore.apply({
+        id: EventId.make("event:projection-fork-source-rollback:after-cut"),
+        type: "turn-item.updated",
+        threadId: sourceThreadId,
+        runId: sourceRun2Id,
+        nodeId: sourceRun2NodeId,
+        driver,
+        occurredAt: now,
+        payload: {
+          id: TurnItemId.make("turn-item:projection-fork-source-rollback:after-cut"),
+          threadId: sourceThreadId,
+          runId: sourceRun2Id,
+          nodeId: sourceRun2NodeId,
+          providerThreadId: sourceProviderThreadId,
+          providerTurnId: null,
+          nativeItemRef: null,
+          parentItemId: null,
+          ordinal: 202,
+          status: "completed",
+          title: null,
+          startedAt: now,
+          completedAt: now,
+          updatedAt: now,
+          type: "assistant_message",
+          messageId: MessageId.make("message:projection-fork-source-rollback:after-cut"),
+          text: "two, after the cut",
+          streaming: false,
+        },
+      });
+      const targetAfterCut = yield* projectionStore.getThreadProjection(targetThreadId);
+      assert.deepEqual(targetAfterCut.visibleTurnItems, targetAfterRollback.visibleTurnItems);
+      const pageAfterCut = yield* projectionStore.getTimelinePage(targetThreadId, {
+        view: "activity",
+        limit: 10,
+      });
+      assert.deepEqual(pageAfterCut.items, targetAfterRollback.visibleTurnItems);
 
       yield* projectionStore.apply({
         id: EventId.make("event:projection-fork-source-rollback:run-3"),

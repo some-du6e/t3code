@@ -1214,6 +1214,100 @@ describe("deriveMessagesTimelineRows", () => {
     ]);
   });
 
+  it("reuses a rewindable tool call's entry until its turn count changes", () => {
+    const runId = RunId.make("run-1");
+    const at = (second: number) => `2026-01-01T00:00:0${second}Z`;
+    const message = (id: string, role: "user" | "assistant", second: number): TimelineEntry => ({
+      id,
+      kind: "message",
+      createdAt: at(second),
+      message: {
+        id: MessageId.make(id),
+        role,
+        text: id,
+        runId,
+        ...(role === "user" ? { inputIntent: "turn_start" as const } : {}),
+        streaming: false,
+        createdAt: at(second),
+        updatedAt: at(second),
+      },
+    });
+    const item: OrchestrationV2TurnItem = {
+      id: TurnItemId.make("pwd-item"),
+      threadId: ThreadId.make("thread"),
+      runId,
+      nodeId: null,
+      providerThreadId: null,
+      providerTurnId: null,
+      nativeItemRef: {
+        driver: ProviderDriverKind.make("claudeAgent"),
+        nativeId: "toolu-pwd",
+        strength: "weak",
+      },
+      parentItemId: null,
+      ordinal: 2,
+      status: "completed",
+      title: null,
+      startedAt: null,
+      completedAt: null,
+      updatedAt: DateTime.makeUnsafe(at(1)),
+      type: "command_execution",
+      input: "pwd",
+    };
+    const toolCall: TimelineEntry = {
+      id: "pwd",
+      kind: "work",
+      createdAt: at(1),
+      entry: {
+        id: "pwd",
+        createdAt: at(1),
+        runId,
+        label: "pwd",
+        tone: "tool",
+        itemType: "command_execution",
+        toolLifecycleStatus: "completed",
+        projectedItem: {
+          visibility: "local",
+          sourceThreadId: item.threadId,
+          sourceItemId: item.id,
+          position: 1,
+          item,
+        },
+      },
+    };
+    const timelineEntries = [
+      message("user-1", "user", 0),
+      toolCall,
+      message("final-1", "assistant", 2),
+    ];
+    const toolEntry = (checkpointTurnCount: number) => {
+      const rows = deriveMessagesTimelineRows({
+        timelineEntries,
+        expandedRunIds: new Set([runId]),
+        isWorking: false,
+        turnDiffSummaries: [
+          {
+            runId,
+            checkpointTurnCount,
+            checkpointRef: CheckpointRef.make("refs/t3/checkpoints/run-1"),
+            status: "ready",
+            files: [],
+            assistantMessageId: null,
+            completedAt: at(3),
+          },
+        ],
+        supportsConversationRollback: true,
+        supportsToolCallRewind: true,
+      });
+      return rows.flatMap((row) => (row.kind === "work" ? row.groupedEntries : []))[0];
+    };
+
+    const first = toolEntry(1);
+    expect(first).toMatchObject({ id: "pwd", rewindTurnCount: 1 });
+    expect(toolEntry(1)).toBe(first);
+    expect(toolEntry(2)).toMatchObject({ id: "pwd", rewindTurnCount: 2 });
+  });
+
   it("folds the first assistant message and settled work before the terminal response", () => {
     const timelineEntries = [
       {

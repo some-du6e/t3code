@@ -554,6 +554,9 @@ export const layerExecutor: Layer.Layer<
                 ...(effect.request.restoreFiles === undefined
                   ? {}
                   : { restoreFiles: effect.request.restoreFiles }),
+                ...(effect.request.afterItemId === undefined
+                  ? {}
+                  : { afterItemId: effect.request.afterItemId }),
               })
               .pipe(
                 Effect.tapCause((cause) =>

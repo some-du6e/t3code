@@ -1,5 +1,6 @@
 import { assert, it } from "@effect/vitest";
 import {
+  CommandId,
   EnvironmentId,
   EventId,
   MessageId,
@@ -77,6 +78,7 @@ const thread = (
     readonly settledAt?: DateTime.Utc;
     readonly linkedPullRequest?: ThreadLinkedPullRequest;
     readonly branchPullRequest?: ThreadLinkedPullRequest;
+    readonly rollbackRequestId?: CommandId;
   } = {},
 ): OrchestrationV2DomainEvent => ({
   id: EventId.make(`created:${threadId}`),
@@ -120,6 +122,9 @@ const thread = (
     settledOverride: overrides.settledAt === undefined ? null : "settled",
     settledAt: overrides.settledAt ?? null,
     lastVisitedAt: null,
+    ...(overrides.rollbackRequestId === undefined
+      ? {}
+      : { rollbackRequestId: overrides.rollbackRequestId }),
     deletedAt: overrides.deletedAt ?? null,
   },
 });
@@ -746,7 +751,13 @@ it.layer(layerTest)("ThreadSearch filters before it ranks", (it) => {
       const queued = ThreadId.make("thread:queued");
       const stopped = ThreadId.make("thread:stopped");
       const recovered = ThreadId.make("thread:recovered");
-      const run = (owner: ThreadId, status: "rolled_back" | "cancelled") =>
+      const beforeCut = ThreadId.make("thread:before-cut");
+      const afterCut = ThreadId.make("thread:after-cut");
+      const run = (
+        owner: ThreadId,
+        status: "rolled_back" | "cancelled" | "completed",
+        rewoundAfterOrdinal?: number,
+      ) =>
         ({
           id: EventId.make(`run:${owner}`),
           type: "run.created",
@@ -771,9 +782,15 @@ it.layer(layerTest)("ThreadSearch filters before it ranks", (it) => {
             completedAt: at(2),
             checkpointId: null,
             contextHandoffId: null,
+            ...(rewoundAfterOrdinal === undefined ? {} : { rewoundAfterOrdinal }),
           },
         }) satisfies OrchestrationV2DomainEvent;
-      const shown = (owner: ThreadId, id: string, as: "turn_start" | "queued_turn" | "reply") =>
+      const shown = (
+        owner: ThreadId,
+        id: string,
+        as: "turn_start" | "queued_turn" | "reply",
+        ordinal = 1,
+      ) =>
         ({
           id: EventId.make(`item:${id}`),
           type: "turn-item.updated",
@@ -788,7 +805,7 @@ it.layer(layerTest)("ThreadSearch filters before it ranks", (it) => {
             providerTurnId: null,
             nativeItemRef: null,
             parentItemId: null,
-            ordinal: 1,
+            ordinal,
             status: "completed",
             title: null,
             startedAt: at(1),
@@ -840,6 +857,20 @@ it.layer(layerTest)("ThreadSearch filters before it ranks", (it) => {
             runId: RunId.make(`run:${recovered}`),
           }),
           shown(recovered, "recovered-reply", "reply"),
+          // A rewind to the turn's tool call at ordinal 1 keeps what it showed up to that call.
+          thread(beforeCut, project, { rollbackRequestId: CommandId.make("rewind:before-cut") }),
+          run(beforeCut, "completed", 1),
+          message(beforeCut, "kept-reply", "assistant", "the albatross drive is mounted", {
+            runId: RunId.make(`run:${beforeCut}`),
+          }),
+          shown(beforeCut, "kept-reply", "reply"),
+          thread(afterCut, project, { rollbackRequestId: CommandId.make("rewind:after-cut") }),
+          run(afterCut, "completed", 1),
+          shown(afterCut, "cut-prompt", "turn_start"),
+          message(afterCut, "cut-reply", "assistant", "the albatross drive is ejected", {
+            runId: RunId.make(`run:${afterCut}`),
+          }),
+          shown(afterCut, "cut-reply", "reply", 2),
         ],
         projections.apply,
         { discard: true },
@@ -848,7 +879,11 @@ it.layer(layerTest)("ThreadSearch filters before it ranks", (it) => {
         (yield* search.search({ query: "albatross" })).matches
           .map((match) => match.messageId)
           .sort(),
-        [MessageId.make("recovered-reply"), MessageId.make("stopped-prompt")],
+        [
+          MessageId.make("kept-reply"),
+          MessageId.make("recovered-reply"),
+          MessageId.make("stopped-prompt"),
+        ],
       );
     }),
   );

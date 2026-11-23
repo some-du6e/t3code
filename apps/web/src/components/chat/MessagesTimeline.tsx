@@ -21,6 +21,7 @@ import {
   type ServerProviderSkill,
   type RunId,
   ThreadId,
+  type TurnItemId,
 } from "@t3tools/contracts";
 import { parseScopedThreadKey } from "@t3tools/client-runtime/environment";
 import { resolveWorkGroupScrollAnchor } from "@t3tools/client-runtime/work-log/scroll-anchor";
@@ -295,10 +296,13 @@ interface MessagesTimelineProps {
     readonly runId: RunId;
   }) => Promise<void>;
   supportsConversationRollback: boolean;
+  /** The provider can also end a turn after one of its tool calls. */
+  supportsToolCallRewind?: boolean;
   threadStartCheckpointAvailable?: boolean;
   availableRevertTurnCounts?: ReadonlySet<number> | undefined;
   onRevertToTurnCount: (targetTurnCount: number, messageId: MessageId) => void;
   onRewindToResponse?: (turnCount: number) => void;
+  onRewindToToolCall?: (input: { readonly turnCount: number; readonly itemId: TurnItemId }) => void;
   onUseArtifactTemplate?: (template: CodexArtifactTemplate) => void;
   onSendAppMessage?: (text: string) => Promise<void>;
   onRunShellCommand?: (command: string) => void;
@@ -398,10 +402,12 @@ const ConversationTimeline = memo(function ConversationTimeline({
   workflowOpening = null,
   onForkFromRun,
   supportsConversationRollback,
+  supportsToolCallRewind = false,
   threadStartCheckpointAvailable = false,
   availableRevertTurnCounts,
   onRevertToTurnCount,
   onRewindToResponse,
+  onRewindToToolCall,
   onUseArtifactTemplate = NOOP_USE_ARTIFACT_TEMPLATE,
   onSendAppMessage,
   onRunShellCommand,
@@ -759,6 +765,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
     activeTurnStartedAt,
     turnDiffSummaries,
     supportsConversationRollback,
+    supportsToolCallRewind,
     threadStartCheckpointAvailable,
     availableRevertTurnCounts,
     worktreeSetup,
@@ -1143,6 +1150,7 @@ const ConversationTimeline = memo(function ConversationTimeline({
     workflowOpening,
     onForkFromRun,
     onRewindToResponse,
+    onRewindToToolCall,
     onToggleTurnFold,
     onToggleAttemptFold,
     onToggleWorkGroup,

@@ -566,6 +566,8 @@ export const ClaudeProviderCapabilitiesV2 = {
     canForkWhileSourceRunning: true,
     canForkFromSubagentThread: false,
     exposesNativeThreadId: true,
+    // Resume accepts any transcript entry, such as the result of one tool call.
+    canRollbackToToolCall: true,
   },
   turns: {
     exposesNativeTurnId: false,
@@ -876,6 +878,11 @@ export interface ClaudeAgentSdkQueryRunnerShape {
   readonly subagentModel: (
     input: ClaudeAgentSdkSubagentLookupInput,
   ) => Effect.Effect<string | null, ClaudeAgentSdkQueryRunnerError>;
+  /** The session's main conversation, oldest first. Absent, a rewind cannot end at a tool call. */
+  readonly sessionMessages?: (input: {
+    readonly sessionId: string;
+    readonly environment: NodeJS.ProcessEnv;
+  }) => Effect.Effect<ReadonlyArray<ClaudeTranscriptEntry>, ClaudeAgentSdkQueryRunnerError>;
   readonly assertComplete: Effect.Effect<void, ClaudeAgentSdkQueryRunnerError>;
 }
 
@@ -1352,6 +1359,92 @@ const decodeClaudeHistoryMessages = Schema.decodeUnknownEffect(
     ),
   ),
 );
+
+const ClaudeTranscript = Schema.Array(
+  Schema.Struct({
+    type: Schema.String,
+    uuid: Schema.String,
+    parent_tool_use_id: Schema.optional(Schema.NullOr(Schema.String)),
+    message: Schema.Struct({ id: Schema.optional(Schema.String), content: Schema.Unknown }),
+  }),
+);
+export type ClaudeTranscriptEntry = (typeof ClaudeTranscript.Type)[number];
+const decodeClaudeTranscript = Schema.decodeUnknownEffect(ClaudeTranscript);
+const decodeClaudeTranscriptJson = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(ClaudeTranscript),
+);
+
+/**
+ * Where the conversation ends when it keeps a tool call: at the result that answers the last
+ * call still open then. Claude answers calls made together at once, so they stay together.
+ */
+export function claudeToolCallRewindPoint(
+  messages: ReadonlyArray<ClaudeTranscriptEntry>,
+  toolUseId: string,
+): {
+  readonly resumeSessionAt: string;
+  readonly keptToolUseIds: ReadonlyArray<string>;
+  /** The calls of the target's response that the conversation keeps. */
+  readonly responseCallIds: ReadonlyArray<string>;
+} | null {
+  const open = new Set<string>();
+  const kept: Array<string> = [];
+  const responseOfCall = new Map<string, string | undefined>();
+  // Without response ids, the calls since none were last open stand in for the response.
+  let batch: Array<string> = [];
+  let answered = false;
+  // Claude Code writes each block of a response as its own entry, all under the response's id.
+  let responseId: string | undefined;
+  let point: ReturnType<typeof claudeToolCallRewindPoint> = null;
+  for (const message of messages) {
+    // A subagent's own calls live in its sidechain, not in this conversation.
+    if (message.parent_tool_use_id != null) continue;
+    // Claude answered again, so the target's response is over.
+    if (
+      answered &&
+      message.type === "assistant" &&
+      (responseId === undefined || message.message.id !== responseId)
+    ) {
+      break;
+    }
+    const content = message.message.content;
+    const blocks: ReadonlyArray<unknown> = Array.isArray(content) ? content : [];
+    let answers = false;
+    for (const block of blocks) {
+      if (!Predicate.isObject(block)) continue;
+      const callId = block.type === "tool_use" ? block.id : undefined;
+      const resultId = block.type === "tool_result" ? block.tool_use_id : undefined;
+      if (message.type === "assistant" && typeof callId === "string") {
+        open.add(callId);
+        kept.push(callId);
+        batch.push(callId);
+        responseOfCall.set(callId, message.message.id);
+        if (callId === toolUseId) responseId = message.message.id;
+      } else if (message.type === "user" && typeof resultId === "string") {
+        open.delete(resultId);
+        answers = true;
+        answered ||= resultId === toolUseId;
+      }
+    }
+    if (!answers || open.size > 0) continue;
+    if (!answered) {
+      batch = [];
+      continue;
+    }
+    // A later call of the response that never got a result, as when Stop killed the CLI,
+    // leaves this point standing.
+    point = {
+      resumeSessionAt: message.uuid,
+      keptToolUseIds: [...kept],
+      responseCallIds:
+        responseId === undefined
+          ? [...batch]
+          : kept.filter((call) => responseOfCall.get(call) === responseId),
+    };
+    if (responseId === undefined) return point;
+  }
+  return point;
+}
 
 // Claude's interactive reply-on-resume removes native abort rows before querying the saved history.
 export function claudeResumeSessionAt(
@@ -2051,6 +2144,35 @@ export const layerQueryRunner: Layer.Layer<
               return yield* openQuery({ ...input, options: { ...options, sessionId } });
             }),
           ),
+        );
+      }),
+      sessionMessages: Effect.fn("ClaudeAgentSdkQueryRunner.sessionMessages")(function* (input: {
+        readonly sessionId: string;
+        readonly environment: NodeJS.ProcessEnv;
+      }) {
+        const hostEnvironment = yield* HostProcess.Environment;
+        const homeDirectory = yield* HostProcess.HomeDirectory;
+        // A moved project keeps its transcript under the old cwd, so the SDK searches by id.
+        const transcript: Effect.Effect<
+          ReadonlyArray<ClaudeTranscriptEntry>,
+          unknown
+        > = claudeConfigDirOf(path, input.environment, homeDirectory) ===
+        claudeConfigDirOf(path, hostEnvironment, homeDirectory)
+          ? Effect.tryPromise({
+              try: () => getSessionMessages(input.sessionId),
+              catch: (cause) => queryRunnerError(cause, "getSessionMessages"),
+            }).pipe(Effect.flatMap(decodeClaudeTranscript))
+          : runClaudeWorker({
+              method: "getSessionMessages",
+              sessionId: input.sessionId,
+              environment: input.environment,
+            }).pipe(
+              Effect.flatMap(decodeClaudeTranscriptJson),
+              Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+              Effect.provideService(Path.Path, path),
+            );
+        return yield* transcript.pipe(
+          Effect.mapError((cause) => queryRunnerError(cause, "getSessionMessages")),
         );
       }),
       forkSession: Effect.fn("ClaudeAgentSdkQueryRunner.forkSession")(function* (
@@ -14920,9 +15042,94 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               }
 
               const nativeThreadId = yield* getNativeThreadId(rollbackInput.providerThread);
+              const target = rollbackInput.target;
+              if (target.type === "provider_turn" && target.afterToolCall !== undefined) {
+                const toolUseId = target.afterToolCall.nativeItemId;
+                // Before the close, so a call Claude no longer holds leaves the process running.
+                const point =
+                  queryRunner.sessionMessages === undefined
+                    ? null
+                    : claudeToolCallRewindPoint(
+                        yield* queryRunner.sessionMessages({
+                          sessionId: nativeThreadId,
+                          environment: adapterOptions.environment,
+                        }),
+                        toolUseId,
+                      );
+                if (point === null) {
+                  return yield* new ProviderAdapter.ProviderAdapterRollbackThreadError({
+                    driver: CLAUDE_PROVIDER,
+                    providerThreadId: rollbackInput.providerThread.id,
+                    reason: "target-unavailable",
+                    cause: `Cannot roll back Claude thread ${rollbackInput.providerThread.id} to tool call ${toolUseId}: its transcript has no complete result for that call.`,
+                  });
+                }
+                // A subagent shows as its own row, so keep those a kept call of the response launched.
+                const responseCalls = new Set(point.responseCallIds);
+                const launchOf = new Map(
+                  [...(yield* Ref.get(sessionSubagentTaskIdsByToolUseId))].map(
+                    ([launch, subagentId]) => [subagentId, launch] as const,
+                  ),
+                );
+                const keptSubagentIds: Array<string> = [];
+                for (const subagentId of target.afterToolCall.subagentIds ?? []) {
+                  // After a restart only the subagent's own transcript names its launch.
+                  const launch =
+                    launchOf.get(subagentId) ??
+                    (yield* queryRunner
+                      .subagentLaunchToolUseId({
+                        sessionId: nativeThreadId,
+                        agentId: subagentId,
+                        dir: input.runtimePolicy.cwd,
+                        threadId: input.threadId,
+                        providerSessionId: input.providerSessionId,
+                      })
+                      .pipe(Effect.orElseSucceed(() => null)));
+                  if (launch !== null && responseCalls.has(launch))
+                    keptSubagentIds.push(subagentId);
+                }
+                const head = {
+                  driver: CLAUDE_PROVIDER,
+                  nativeId: point.resumeSessionAt,
+                  strength: "weak" as const,
+                };
+                // The roster update the close publishes then carries the new head.
+                yield* rememberProviderThread({
+                  ...rollbackInput.providerThread,
+                  nativeConversationHeadRef: head,
+                });
+                yield* closeLiveQueryForNativeThread(nativeThreadId);
+                deliveredAppContext.delete(nativeThreadId);
+                // The close ended the process's background work; its last roster is what is left.
+                const remembered = (yield* Ref.get(lastProviderThreadByNativeThread)).get(
+                  nativeThreadId,
+                );
+                const now = yield* DateTime.now;
+                return {
+                  providerThread: {
+                    ...rollbackInput.providerThread,
+                    providerSessionId: input.providerSessionId,
+                    nativeConversationHeadRef: head,
+                    ...(remembered?.pendingBackgroundTasks === undefined
+                      ? {}
+                      : { pendingBackgroundTasks: remembered.pendingBackgroundTasks }),
+                    status: "idle" as const,
+                    lastRunOrdinal: target.appRunOrdinal,
+                    updatedAt: now,
+                  },
+                  // Later rewinds and forks to this turn resume from the tool call.
+                  providerTurns: [{ ...target.providerTurn, nativeTurnRef: head }],
+                  messages: [],
+                  runtimeRequests: [],
+                  keptToolCallIds: [...point.keptToolUseIds, ...keptSubagentIds],
+                };
+              }
               yield* closeLiveQueryForNativeThread(nativeThreadId);
               // The rewound history may no longer hold the turns that carried app notes.
               deliveredAppContext.delete(nativeThreadId);
+              const remembered = (yield* Ref.get(lastProviderThreadByNativeThread)).get(
+                nativeThreadId,
+              );
               const now = yield* DateTime.now;
               const resumeSessionAt = yield* resolveClaudeRollbackResumeSessionAt(rollbackInput);
 
@@ -14964,6 +15171,9 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                           nativeId: resumeSessionAt,
                           strength: "weak" as const,
                         },
+                  ...(remembered?.pendingBackgroundTasks === undefined
+                    ? {}
+                    : { pendingBackgroundTasks: remembered.pendingBackgroundTasks }),
                   status: "idle" as const,
                   lastRunOrdinal: rollbackInput.target.appRunOrdinal,
                   updatedAt: now,

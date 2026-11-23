@@ -3,6 +3,7 @@ import { assert, it, vi } from "@effect/vitest";
 import {
   CheckpointId,
   CheckpointRef,
+  CommandId,
   EventId,
   MessageId,
   NodeId,
@@ -17,6 +18,7 @@ import {
   ProviderSessionId,
   ProviderThreadId,
   ThreadId,
+  TurnItemId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as DateTime from "effect/DateTime";
@@ -784,7 +786,55 @@ const seedRollbackHistory = Effect.gen(function* () {
     });
   }
 
+  // Run 2 ran one command, then two together, then a third, and answered.
+  const itemId = (name: string) => TurnItemId.make(`rollback-history-item-${name}`);
+  const item = (name: string, ordinal: number, fields: Record<string, unknown>) =>
+    apply({
+      type: "turn-item.updated",
+      runId: runId(2),
+      payload: {
+        id: itemId(name),
+        threadId,
+        runId: runId(2),
+        nodeId: nodeId(2),
+        providerThreadId,
+        providerTurnId: turnId(2),
+        nativeItemRef: null,
+        parentItemId: null,
+        ordinal,
+        status: "completed",
+        title: null,
+        startedAt: now,
+        completedAt: now,
+        updatedAt: now,
+        ...fields,
+      },
+    } as EventInput);
+  const command = (name: string) => ({
+    type: "command_execution",
+    input: name,
+    nativeItemRef: { driver, nativeId: `native-${name}`, strength: "strong" },
+  });
+  yield* item("pwd", 201, command("pwd"));
+  yield* item("cmd", 202, command("cmd"));
+  yield* item("powershell", 203, command("powershell"));
+  yield* item("thought", 204, { type: "reasoning", text: "They match.", streaming: false });
+  yield* item("later", 205, command("later"));
+  yield* item("answer", 206, {
+    type: "assistant_message",
+    messageId: MessageId.make("rollback-history-answer"),
+    text: "All three match.",
+    streaming: false,
+  });
+  yield* item("files", 298, {
+    type: "checkpoint",
+    checkpointId: checkpointId(2),
+    scopeId,
+    files: [],
+  });
+
   const rollbackCounts: number[] = [];
+  const toolCallTargets: string[] = [];
   const restored: CheckpointId[] = [];
   const deletedRefs: CheckpointId[] = [];
   const discardedRepositoryOrdinals: number[] = [];
@@ -832,7 +882,28 @@ const seedRollbackHistory = Effect.gen(function* () {
               rollbackThread: (input: ProviderAdapter.ProviderAdapterV2RollbackThreadInput) =>
                 Effect.gen(function* () {
                   rollbackCounts.push(yield* resolveCodexRollbackTurnCount(input));
-                  return { providerThread: input.providerThread };
+                  const target = input.target;
+                  if (target.type !== "provider_turn" || target.afterToolCall === undefined) {
+                    return { providerThread: input.providerThread };
+                  }
+                  toolCallTargets.push(target.afterToolCall.nativeItemId);
+                  // cmd and powershell ran together, so the provider keeps both results.
+                  return {
+                    providerThread: input.providerThread,
+                    providerTurns: [
+                      {
+                        ...target.providerTurn,
+                        nativeTurnRef: {
+                          driver,
+                          nativeId: "native-head-powershell",
+                          strength: "weak" as const,
+                        },
+                      },
+                    ],
+                    messages: [],
+                    runtimeRequests: [],
+                    keptToolCallIds: ["native-pwd", "native-cmd", "native-powershell"],
+                  };
                 }),
             } as never),
         }),
@@ -850,6 +921,19 @@ const seedRollbackHistory = Effect.gen(function* () {
         checkpointId: checkpointId(ordinal),
       });
     }).pipe(Effect.provide(serviceLayer));
+  const rewindToToolCall = (name: string, restoreFiles = false, requestId?: CommandId) =>
+    Effect.gen(function* () {
+      const service = yield* CheckpointRollbackService.CheckpointRollbackServiceV2;
+      yield* service.execute({
+        threadId,
+        providerThreadId,
+        scopeId,
+        checkpointId: checkpointId(2),
+        restoreFiles,
+        afterItemId: itemId(name),
+        ...(requestId === undefined ? {} : { requestId }),
+      });
+    }).pipe(Effect.provide(serviceLayer));
 
   return {
     store,
@@ -858,8 +942,12 @@ const seedRollbackHistory = Effect.gen(function* () {
     runId,
     nodeId,
     checkpointId,
+    itemId,
+    turnId,
     rollback,
+    rewindToToolCall,
     rollbackCounts,
+    toolCallTargets,
     restored,
     deletedRefs,
     discardedRepositoryOrdinals,
@@ -975,6 +1063,69 @@ it.layer(ProjectionStore.layer.pipe(Layer.provideMerge(SqlitePersistence.layerMe
             [history.checkpointId(0), history.checkpointId(8)],
           );
         }),
+    );
+  },
+);
+
+// Its own store: a history read above leaves a row on purpose that a thread read cannot decode.
+it.layer(ProjectionStore.layer.pipe(Layer.provideMerge(SqlitePersistence.layerMemory)))(
+  "rewind to a tool call",
+  (it) => {
+    it.effect("rewinds to a tool call, keeping the calls made with it and the files", () =>
+      Effect.gen(function* () {
+        const history = yield* seedRollbackHistory;
+        const refused = yield* Effect.flip(history.rewindToToolCall("cmd", true));
+        assert.equal(
+          refused._tag === "CheckpointRollbackExecutionError" ? refused.reason : refused._tag,
+          "rollback-target-invalid",
+        );
+
+        const requestId = CommandId.make("command:rewind-to-tool-call");
+        yield* history.rewindToToolCall("cmd", false, requestId);
+
+        assert.deepEqual(history.toolCallTargets, ["native-cmd"]);
+        assert.deepEqual(history.restored, []);
+        const records = yield* history.store.getThreadRecords(history.threadId, [
+          "runs",
+          "providerTurns",
+        ]);
+        const runs = new Map(records.runs.map((run) => [run.ordinal, run]));
+        assert.equal(runs.get(2)?.status, "completed");
+        assert.equal(runs.get(2)?.rewoundAfterOrdinal, 203);
+        assert.deepEqual((yield* history.store.getThread(history.threadId)).rollbackUnrestored, {
+          requestId,
+          repositories: [],
+        });
+        assert.deepEqual(
+          history.committed.slice(0, 4).map((event) => event.type),
+          [
+            "run.updated",
+            "provider-turn.updated",
+            "thread.metadata-updated",
+            "provider-thread.updated",
+          ],
+        );
+        assert.isTrue([3, 4, 5, 6].every((ordinal) => runs.get(ordinal)?.status === "rolled_back"));
+        assert.equal(
+          records.providerTurns.find((turn) => turn.id === history.turnId(2.5))?.nativeTurnRef
+            ?.nativeId,
+          "native-head-powershell",
+        );
+        // The full projection and the windowed read hide the same rows.
+        const kept = ["pwd", "cmd", "powershell", "files"].map(history.itemId);
+        const projection = yield* history.store.getThreadProjection(history.threadId);
+        assert.deepEqual(
+          projection.visibleTurnItems.map((row) => row.item.id),
+          kept,
+        );
+        const window = yield* history.store.getThreadSnapshotWindow(history.threadId, {
+          rowLimit: 50,
+        });
+        assert.deepEqual(
+          window.projection.visibleTurnItems.map((row) => row.item.id),
+          kept,
+        );
+      }),
     );
   },
 );

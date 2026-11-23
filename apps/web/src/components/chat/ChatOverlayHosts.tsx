@@ -5,7 +5,9 @@ import type {
   OrchestrationV2ThreadProjection,
   ScopedThreadRef,
   ThreadId,
+  TurnItemId,
 } from "@t3tools/contracts";
+import type { ThreadStructure } from "@t3tools/client-runtime/state/shell";
 import { rewindFileRestore } from "@t3tools/client-runtime/state/thread-repositories";
 import { useAtomValue } from "@effect/atom-react";
 import { T, Var } from "gt-react";
@@ -299,6 +301,8 @@ export function RevertConfirmHost(props: {
 
 interface PendingRewind {
   readonly turnCount: number;
+  /** A tool call of the turn: only the conversation rewinds, to just after it. */
+  readonly afterItemId?: TurnItemId;
 }
 
 const rewindConfirmAtom = makeThreadOverlayAtom<PendingRewind>("rewind-confirm");
@@ -308,13 +312,31 @@ export function openRewindConfirm(threadKey: string, pending: PendingRewind): vo
 }
 
 export function RewindConfirmHost(
-  props: Omit<ComponentProps<typeof RevertConfirmHost>, "onConfirm"> & {
-    readonly onConfirm: (turnCount: number, restoreFiles: boolean) => void;
+  props: Omit<ComponentProps<typeof RevertConfirmHost>, "onConfirm" | "projection"> & {
+    readonly projection: Pick<
+      ThreadStructure,
+      "checkpoints" | "checkpointScopes" | "providerThreads" | "thread"
+    > | null;
+    readonly onConfirm: (
+      turnCount: number,
+      restoreFiles: boolean,
+      afterItemId?: TurnItemId,
+    ) => void;
   },
 ) {
   const pending = useThreadOverlay(rewindConfirmAtom, props.threadKey);
+  const afterItemId = pending?.afterItemId;
+  const activeProviderThreadId = props.projection?.thread.activeProviderThreadId;
+  const activeProviderThread = props.projection?.providerThreads.find(
+    (providerThread) => providerThread.id === activeProviderThreadId,
+  );
+  // Rewinding to a tool call closes Claude's process, which ends its background work.
+  const stopsBackgroundWork =
+    afterItemId !== undefined && (activeProviderThread?.pendingBackgroundTasks?.length ?? 0) > 0;
   const checkpoint =
-    pending === null ? undefined : findRevertCheckpoint(props.projection, pending.turnCount);
+    pending === null || afterItemId !== undefined
+      ? undefined
+      : findRevertCheckpoint(props.projection, pending.turnCount);
   // Only a missing snapshot depends on the task folder: its repositories may still restore.
   const taskFolderQuery = useEnvironmentQuery(
     checkpoint?.status === "missing" && props.taskFolderPath !== null
@@ -334,9 +356,10 @@ export function RewindConfirmHost(
           taskFolder: taskFolderQuery.data?.taskFolder,
         });
   const confirm = (restoreFiles: boolean) => {
-    if (pending === null || (restoreFiles && fileRestore === null)) return;
+    if (pending === null || (restoreFiles && (fileRestore === null || afterItemId !== undefined)))
+      return;
     closeThreadOverlay(rewindConfirmAtom);
-    props.onConfirm(pending.turnCount, restoreFiles);
+    props.onConfirm(pending.turnCount, restoreFiles, afterItemId);
   };
   return (
     <AlertDialog
@@ -352,28 +375,37 @@ export function RewindConfirmHost(
             {"Rewind to here?"}
           </AlertDialogTitle>
           <AlertDialogDescription>
-            {fileRestore === "repositories"
+            {afterItemId !== undefined
               ? // oxlint-disable-next-line t3code/no-untranslated-copy -- fork-only copy, kept out of the GT catalogs
-                "Remove every turn after this response. Your draft stays in the composer. You can also put this thread’s repository worktrees back to how this response left them. Files in the project folder itself stay as they are."
-              : // oxlint-disable-next-line t3code/no-untranslated-copy -- fork-only copy, kept out of the GT catalogs
-                "Remove every turn after this response. Your draft stays in the composer. You can also put your files back to how this response left them, undoing later edits."}
+                "Remove everything the agent did after this tool call, and every later turn. The agent picks up from this tool call’s result when you send your next message. Your files stay as they are, and your draft stays in the composer."
+              : fileRestore === "repositories"
+                ? // oxlint-disable-next-line t3code/no-untranslated-copy -- fork-only copy, kept out of the GT catalogs
+                  "Remove every turn after this response. Your draft stays in the composer. You can also put this thread’s repository worktrees back to how this response left them. Files in the project folder itself stay as they are."
+                : // oxlint-disable-next-line t3code/no-untranslated-copy -- fork-only copy, kept out of the GT catalogs
+                  "Remove every turn after this response. Your draft stays in the composer. You can also put your files back to how this response left them, undoing later edits."}
+            {stopsBackgroundWork
+              ? // oxlint-disable-next-line t3code/no-untranslated-copy -- fork-only copy, kept out of the GT catalogs
+                " Background commands and agents that are still running stop."
+              : null}
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
           <AlertDialogClose render={<Button variant="outline" />}>
             <T>Cancel</T>
           </AlertDialogClose>
-          <Button
-            variant="destructive-outline"
-            disabled={fileRestore === null}
-            onClick={() => confirm(true)}
-          >
-            {fileRestore === "repositories" ? (
-              <T>Revert repositories too</T>
-            ) : (
-              <T>Revert files too</T>
-            )}
-          </Button>
+          {afterItemId === undefined ? (
+            <Button
+              variant="destructive-outline"
+              disabled={fileRestore === null}
+              onClick={() => confirm(true)}
+            >
+              {fileRestore === "repositories" ? (
+                <T>Revert repositories too</T>
+              ) : (
+                <T>Revert files too</T>
+              )}
+            </Button>
+          ) : null}
           <Button onClick={() => confirm(false)}>
             <T>Revert and keep changes</T>
           </Button>

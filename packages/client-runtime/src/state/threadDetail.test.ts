@@ -409,6 +409,20 @@ describe("derived thread state through a streamed message", () => {
     occurredAt: later,
     payload: message,
   });
+  const answerItemUpdated = (message: OrchestrationV2ConversationMessage, ordinal: number) => ({
+    id: EventId.make(`event-item-${message.id}`),
+    type: "turn-item.updated" as const,
+    threadId: v2ThreadId,
+    occurredAt: later,
+    payload: {
+      ...assistant,
+      id: TurnItemId.make(`item-${message.id}`),
+      messageId: message.id,
+      ordinal,
+      status: "completed" as const,
+      streaming: false,
+    },
+  });
 
   it("keeps the queue workflow through streamed text and follows a queued message edit", () => {
     using thread = setup();
@@ -421,7 +435,7 @@ describe("derived thread state through a streamed message", () => {
     expect(thread.queue()?.queuedRuns.map((queued) => queued.text)).toEqual(["Then run lint"]);
   });
 
-  it("keeps checkpoint summaries through streamed text and follows new assistant messages and checkpoints", () => {
+  it("keeps checkpoint summaries through streamed text and follows new assistant messages, checkpoints and rewinds", () => {
     using thread = setup();
     const first = thread.checkpoints();
     thread.apply(messageUpdated({ ...streamed, text: "Hello", updatedAt: later }));
@@ -442,6 +456,26 @@ describe("derived thread state through a streamed message", () => {
       payload: checkpoint(2),
     });
     expect(thread.checkpoints().map((summary) => summary.checkpointTurnCount)).toEqual([1, 2]);
+
+    thread.apply(answerItemUpdated(streamed, 1));
+    thread.apply(answerItemUpdated(followUp, 3));
+    thread.apply({
+      id: EventId.make("run-rewound"),
+      type: "run.updated",
+      threadId: v2ThreadId,
+      occurredAt: later,
+      payload: {
+        ...queuedRun,
+        id: runId,
+        ordinal: 1,
+        status: "completed",
+        rewoundAfterOrdinal: 2,
+      },
+    });
+    expect(thread.checkpoints().map((summary) => summary.assistantMessageId)).toEqual([
+      streamed.id,
+      streamed.id,
+    ]);
   });
 });
 

@@ -90,7 +90,8 @@ export const layer = Layer.effect(
     });
 
     const forThread = Effect.fn("McpAppModelContext.forThread")(function* (threadId: ThreadId) {
-      // Match by id across fork lineage; later source rollbacks leave the fork's copy intact.
+      // Match by id across fork lineage; a later rollback on the source, or a rewind to an
+      // earlier tool call of the app's run, leaves the fork's copy intact.
       return yield* sql<McpAppModelContextEntry>`
         SELECT context.item_id AS "itemId", context.server, context.tool, context.text
         FROM mcp_app_model_context AS context
@@ -101,8 +102,14 @@ export const layer = Layer.effect(
         WHERE context.thread_id = ${threadId}
           AND (
             run.status IS NULL
-            OR run.status <> 'rolled_back'
             OR run.thread_id <> context.thread_id
+            OR (
+              run.status <> 'rolled_back'
+              AND item.ordinal <= COALESCE(
+                json_extract(run.payload_json, '$.rewoundAfterOrdinal'),
+                item.ordinal
+              )
+            )
           )
         ORDER BY context.updated_at, context.item_id
       `.pipe(NodeSqliteClient.readOnly, Effect.mapError(fail));

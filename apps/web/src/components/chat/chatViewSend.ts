@@ -4,6 +4,7 @@ import {
   type ModelSelection,
   type ScopedThreadRef,
   type ThreadId,
+  type TurnItemId,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
 } from "@t3tools/contracts";
 import {
@@ -296,6 +297,8 @@ export async function rewindToResponse(input: {
   readonly threadId: ThreadId;
   readonly turnCount: number;
   readonly restoreFiles: boolean;
+  /** One of the run's tool calls: the conversation ends after it and the files stay. */
+  readonly afterItemId?: TurnItemId;
   readonly checkpoint: ReturnType<typeof findRevertCheckpoint>;
   readonly revertThreadCheckpoint: Parameters<typeof rewindToMessage>[0]["revertThreadCheckpoint"];
 }): Promise<{ readonly error: string | null }> {
@@ -312,14 +315,17 @@ export async function rewindToResponse(input: {
             commandId,
             threadId: input.threadId,
             turnCount: input.turnCount,
-            restoreFiles: input.restoreFiles,
+            restoreFiles: input.afterItemId === undefined && input.restoreFiles,
             ...(input.checkpoint === undefined
               ? {}
               : { checkpointId: input.checkpoint.id, scopeId: input.checkpoint.scopeId }),
+            ...(input.afterItemId === undefined ? {} : { afterItemId: input.afterItemId }),
           },
         });
         if (result._tag === "Failure") throw squashAtomCommandFailure(result);
       },
+      undefined,
+      input.afterItemId !== undefined,
     );
     if (unrestored.length > 0) {
       toastManager.add({

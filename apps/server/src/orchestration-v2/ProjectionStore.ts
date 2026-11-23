@@ -991,6 +991,9 @@ function preserveRunRecordedFields(
     current.restartCancelledBackgroundWork !== undefined
       ? { restartCancelledBackgroundWork: current.restartCancelledBackgroundWork }
       : {}),
+    ...(next.rewoundAfterOrdinal === undefined && current.rewoundAfterOrdinal !== undefined
+      ? { rewoundAfterOrdinal: current.rewoundAfterOrdinal }
+      : {}),
     // Only a submission sets the output; a lifecycle write carries it as it was when read.
     ...(current.output !== undefined ? { output: current.output } : {}),
   };
@@ -1661,7 +1664,8 @@ function isTurnItemAtOrBeforeRun(input: {
 }
 
 // Run ordinals enforce the fork cutoff; this keeps later rollbacks from hiding
-// inherited history while retaining cancellation evidence for undelivered input.
+// inherited history while retaining cancellation evidence for undelivered input
+// and the cut of a rewind to one of the run's tool calls.
 function createInheritedTurnItemVisibility(
   source: Parameters<typeof createOrchestrationV2TurnItemVisibility>[0],
 ) {
@@ -1672,12 +1676,12 @@ function createInheritedTurnItemVisibility(
   );
   return createOrchestrationV2TurnItemVisibility({
     ...source,
-    runs: source.runs.flatMap((run) =>
+    runs: source.runs.map((run) =>
       run.status !== "rolled_back"
-        ? [run]
+        ? run
         : cancelledRunIds.has(run.id)
-          ? [{ ...run, status: "cancelled" as const }]
-          : [],
+          ? { ...run, status: "cancelled" as const }
+          : { ...run, status: "completed" as const },
     ),
   });
 }
@@ -2615,8 +2619,11 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 completed_at = excluded.completed_at,
                 payload_json = ${keepRecordedRunOutput(
                   keepRecordedRunField(
-                    keepRecordedRunField(sql`excluded.payload_json`, "$.delegatedCompletion"),
-                    "$.restartCancelledBackgroundWork",
+                    keepRecordedRunField(
+                      keepRecordedRunField(sql`excluded.payload_json`, "$.delegatedCompletion"),
+                      "$.restartCancelledBackgroundWork",
+                    ),
+                    "$.rewoundAfterOrdinal",
                   ),
                 )}
             `;
@@ -3435,6 +3442,14 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                       ${window.requiredRunId ?? null} IS NOT NULL
                       OR run.status IS NULL
                       OR run.status <> 'rolled_back'
+                    )
+                    -- A rewind to one of the run's tool calls removed the items after it.
+                    AND (
+                      item.type = 'checkpoint'
+                      OR item.ordinal <= COALESCE(
+                        json_extract(run.payload_json, '$.rewoundAfterOrdinal'),
+                        item.ordinal
+                      )
                     )
                     AND NOT (
                       item.type = 'user_message'
@@ -6711,22 +6726,27 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         Effect.mapError(controlReadError(threadId)),
       );
     // Tool output reaches the export unchanged, so the bytes of its text, also inside a structured
-    // result, are a floor for the export. Other stored bytes are not: decoding drops fields. A
-    // rolled back run is the only way the export hides a tool row, and rows a fork inherits only
-    // add to it. The output sum parses payloads, so it runs only when the tool rows exceed `limit`.
+    // result, are a floor for the export. Other stored bytes are not: decoding drops fields. Only a
+    // rollback or a rewind to an earlier call hides a tool row, and inherited rows only add to it.
+    // The output sum parses payloads, so it runs only when the tool rows exceed `limit`.
     const getTranscriptByteFloor: ProjectionStoreV2Shape["getTranscriptByteFloor"] = (
       threadId,
       limit,
     ) =>
       sql<{ bytes: number }>`
         WITH tool_rows AS (
-          SELECT payload_json FROM orchestration_v2_projection_turn_items
-          WHERE thread_id = ${threadId}
-            AND type IN ('command_execution', 'dynamic_tool')
-            AND (run_id IS NULL OR run_id NOT IN (
+          SELECT item.payload_json FROM orchestration_v2_projection_turn_items AS item
+          WHERE item.thread_id = ${threadId}
+            AND item.type IN ('command_execution', 'dynamic_tool')
+            AND (item.run_id IS NULL OR item.run_id NOT IN (
               SELECT run_id FROM orchestration_v2_projection_runs
               WHERE thread_id = ${threadId} AND status = 'rolled_back'
             ))
+            AND NOT EXISTS (
+              SELECT 1 FROM orchestration_v2_projection_runs AS run
+              WHERE run.run_id = item.run_id
+                AND item.ordinal > json_extract(run.payload_json, '$.rewoundAfterOrdinal')
+            )
         )
         SELECT CASE
           WHEN (SELECT COALESCE(SUM(octet_length(payload_json)), 0) FROM tool_rows) <= ${limit}
@@ -7347,11 +7367,27 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       if (ownRowsOnly.length === 0) return null;
       const records = yield* getThreadRecords(threadId, []);
       if (inheritedRunFork(records.thread) !== null) return null;
+      type HidingRunRow = {
+        id: RunId;
+        status: OrchestrationV2Run["status"];
+        rewound_after_ordinal: number | null;
+      };
       // Only these runs and attempts can hide rows, and their columns are all visibility reads.
-      const [hidingRuns, superseded] = yield* Effect.all([
-        sql<{ id: RunId; status: OrchestrationV2Run["status"] }>`
-          SELECT run_id AS id, status FROM orchestration_v2_projection_runs
-          WHERE thread_id = ${threadId} AND status IN ('rolled_back', 'queued', 'cancelled')`,
+      // Every rewind records its request on the thread before it cuts a run, so a thread without
+      // one has no cut, and the status index finds its hiding runs without reading run payloads.
+      const [hidingRunRows, superseded] = yield* Effect.all([
+        records.thread.rollbackRequestId === undefined
+          ? sql<HidingRunRow>`
+              SELECT run_id AS id, status, NULL AS rewound_after_ordinal
+              FROM orchestration_v2_projection_runs
+              WHERE thread_id = ${threadId} AND status IN ('rolled_back', 'queued', 'cancelled')`
+          : sql<HidingRunRow>`
+              SELECT run_id AS id, status,
+                json_extract(payload_json, '$.rewoundAfterOrdinal') AS rewound_after_ordinal
+              FROM orchestration_v2_projection_runs
+              WHERE thread_id = ${threadId}
+                AND (status IN ('rolled_back', 'queued', 'cancelled')
+                  OR json_extract(payload_json, '$.rewoundAfterOrdinal') IS NOT NULL)`,
         sql<{ runId: RunId; rootNodeId: NodeId; status: "superseded" }>`
           SELECT run_id AS runId, root_node_id AS rootNodeId, status
           FROM orchestration_v2_projection_run_attempts
@@ -7363,6 +7399,11 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           : yield* sql<{ run_id: string | null }>`
               SELECT DISTINCT run_id FROM orchestration_v2_projection_turn_items
               WHERE thread_id = ${threadId} AND type = 'run_interrupt_request'`;
+      const hidingRuns = hidingRunRows.map(({ rewound_after_ordinal, ...run }) =>
+        rewound_after_ordinal === null
+          ? run
+          : { ...run, rewoundAfterOrdinal: rewound_after_ordinal },
+      );
       const isVisible = createOrchestrationV2TurnItemVisibility({
         runs: hidingRuns,
         attempts: superseded,
@@ -7372,13 +7413,16 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           nodeId: null,
         })),
       });
-      // Only these runs can hide rows: every row of a rolled-back run, the queued turn of a
-      // queued or cancelled run, and the stop result of a replaced attempt. So the hidden rows
-      // are found without reading the thread.
+      // Only these runs can hide rows: every row of a rolled-back run, the rows after a rewind
+      // to one of a run's tool calls, the queued turn of a queued or cancelled run, and the stop
+      // result of a replaced attempt. So the hidden rows are found without reading the thread.
       const stoppedRuns = new Set(stopRequests.map((row) => row.run_id));
       const runsWithStatus = (...statuses: ReadonlyArray<OrchestrationV2Run["status"]>) =>
         hidingRuns.flatMap((run) => (statuses.includes(run.status) ? [String(run.id)] : []));
       const rolledBack = runsWithStatus("rolled_back");
+      const rewound = hidingRuns.flatMap((run) =>
+        run.status !== "rolled_back" && "rewoundAfterOrdinal" in run ? [String(run.id)] : [],
+      );
       const heldInput = runsWithStatus("queued", "cancelled");
       const steered = [...new Set(superseded.map((attempt) => String(attempt.runId)))].filter(
         (runId) => !stoppedRuns.has(runId) && !rolledBack.includes(runId),
@@ -7395,11 +7439,11 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         item.ordinal, CASE WHEN item.type = 'user_message'
           THEN json_extract(item.payload_json, '$.inputIntent') END AS input_intent`;
       const [rolledBackRows, conversationRows] = yield* Effect.all([
-        rolledBack.length === 0
+        rolledBack.length + rewound.length === 0
           ? Effect.succeed([])
           : sql<HiddenCandidate>`
               SELECT ${candidateColumns}
-              FROM json_each(${encodeIdList(rolledBack)}) AS wanted
+              FROM json_each(${encodeIdList([...rolledBack, ...rewound])}) AS wanted
               CROSS JOIN orchestration_v2_projection_turn_items AS item
                 INDEXED BY orchestration_v2_projection_turn_items_thread_run_idx
                 ON item.thread_id = ${threadId} AND item.run_id = wanted.value`,
@@ -7418,12 +7462,18 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                   OR (item.type = 'run_interrupt_result'
                     AND item.run_id IN (SELECT value FROM json_each(${encodeIdList(steered)}))))`,
       ]);
-      const hidden = [...rolledBackRows, ...conversationRows].filter(
+      // A rewound run can also hold a replaced attempt's stop result: count each row once.
+      const hidden = [
+        ...new Map(
+          [...rolledBackRows, ...conversationRows].map((row) => [row.turn_item_id, row]),
+        ).values(),
+      ].filter(
         (row) =>
           !isVisible({
             type: row.type,
             runId: RunId.make(row.run_id),
             nodeId: row.node_id === null ? null : NodeId.make(row.node_id),
+            ordinal: row.ordinal,
             ...(row.input_intent === null ? {} : { inputIntent: row.input_intent }),
           }),
       );

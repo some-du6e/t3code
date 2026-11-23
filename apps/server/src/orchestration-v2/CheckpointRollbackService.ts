@@ -7,8 +7,10 @@ import {
   ProviderThreadId,
   repositoryRewindCheckpoint,
   ThreadId,
+  type TurnItemId,
   VcsProcessExitError,
 } from "@t3tools/contracts";
+import { orchestrationV2RewindableToolCallId } from "@t3tools/shared/orchestrationV2Timeline";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -38,7 +40,7 @@ import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import { ProjectionStoreV2 } from "./ProjectionStore.ts";
 import { GIT_INDEX_LOCKED_DETAIL } from "../vcs/VcsProcess.ts";
 import * as ProjectStore from "./ProjectStore.ts";
-import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
+import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import { ProviderSessionManagerV2 } from "./ProviderSessionManager.ts";
 import { RuntimePolicyAboveCeilingError, RuntimePolicyV2 } from "./RuntimePolicy.ts";
 import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
@@ -82,14 +84,23 @@ const isCheckpointRollbackExecutionError = Schema.is(CheckpointRollbackExecution
 const isVcsProcessExitError = Schema.is(VcsProcessExitError);
 const isCheckpointRestoreError = Schema.is(CheckpointRestoreError);
 const isRuntimePolicyAboveCeilingError = Schema.is(RuntimePolicyAboveCeilingError);
+const isProviderAdapterRollbackThreadError = Schema.is(
+  ProviderAdapter.ProviderAdapterRollbackThreadError,
+);
 
 /**
- * The message clients see when a rollback fails. Only a held Git index lock
- * gets its own explanation; other reasons carry internal ids or raw Git
- * output, so they fall back to the generic message.
+ * The message clients see when a rollback fails. Only causes written for users get
+ * their own explanation; other reasons carry internal ids or raw Git output, so they
+ * fall back to the generic message.
  */
 export function rollbackFailureClientMessage(error: CheckpointRollbackExecutionError): string {
   if (isRuntimePolicyAboveCeilingError(error.cause)) return error.cause.message;
+  if (
+    isProviderAdapterRollbackThreadError(error.cause) &&
+    error.cause.reason === "target-unavailable"
+  ) {
+    return "This tool call is no longer in Claude's saved conversation.";
+  }
   const restoreCause = isCheckpointRestoreError(error.cause) ? error.cause.cause : undefined;
   return isVcsProcessExitError(restoreCause) && restoreCause.detail === GIT_INDEX_LOCKED_DETAIL
     ? GIT_INDEX_LOCKED_DETAIL
@@ -103,8 +114,10 @@ export interface CheckpointRollbackServiceV2Shape {
     readonly checkpointId: CheckpointId;
     readonly scopeId: CheckpointScopeId;
     readonly restoreFiles?: boolean;
-    /** The rewind command: names the request when repositories are reported as left unrestored. */
+    /** The rewind command: recorded as finished, with any repositories left unrestored. */
     readonly requestId?: CommandId;
+    /** A tool call of the checkpoint's run: the conversation keeps the run up to and including it. */
+    readonly afterItemId?: TurnItemId;
   }) => Effect.Effect<void, CheckpointRollbackExecutionError>;
 }
 
@@ -154,6 +167,7 @@ export const layer: Layer.Layer<
       readonly scopeId: CheckpointScopeId;
       readonly restoreFiles?: boolean;
       readonly requestId?: CommandId;
+      readonly afterItemId?: TurnItemId;
     }) {
       const context = yield* projections.getCheckpointRollbackContext(input.threadId, input);
       const { providerThread, checkpoint, scope, targetAttempt, runsToRollback, staleCheckpoints } =
@@ -197,6 +211,48 @@ export const layer: Layer.Layer<
       }
 
       const targetOrdinal = checkpoint.appRunOrdinal ?? 0;
+      // Only a run's end has a file snapshot, so a tool call is a conversation rewind.
+      const afterItemId = input.afterItemId;
+      const afterToolCall =
+        afterItemId === undefined
+          ? null
+          : yield* Effect.gen(function* () {
+              const item = yield* projections.getTurnItem({
+                threadId: input.threadId,
+                itemId: afterItemId,
+              });
+              const run =
+                item?.runId == null
+                  ? undefined
+                  : yield* projections.getRun(input.threadId, item.runId);
+              const nativeItemId = item == null ? null : orchestrationV2RewindableToolCallId(item);
+              if (
+                restoreFiles ||
+                item == null ||
+                nativeItemId === null ||
+                run === undefined ||
+                run.ordinal !== targetOrdinal ||
+                run.status === "rolled_back" ||
+                (run.rewoundAfterOrdinal !== undefined && item.ordinal > run.rewoundAfterOrdinal)
+              ) {
+                return yield* invalidTarget();
+              }
+              const { turnItems } = yield* projections.getThreadRecords(
+                input.threadId,
+                ["turnItems"],
+                { turnItemRunId: run.id },
+              );
+              // A subagent's row has its own id, so the adapter tells which a kept call launched.
+              const subagentIds = turnItems.flatMap((runItem) =>
+                runItem.type === "subagent" &&
+                runItem.parentItemId === null &&
+                runItem.ordinal > item.ordinal &&
+                runItem.nativeItemRef?.nativeId != null
+                  ? [runItem.nativeItemRef.nativeId]
+                  : [],
+              );
+              return { item, nativeItemId, runId: run.id, runItems: turnItems, subagentIds };
+            });
       const rollbackTarget: ProviderAdapter.ProviderAdapterV2RollbackTarget =
         targetOrdinal === 0
           ? {
@@ -235,6 +291,16 @@ export const layer: Layer.Layer<
                 appRunOrdinal: targetOrdinal,
                 providerTurn: targetTurn,
                 ...(message === undefined ? {} : { message }),
+                ...(afterToolCall === null
+                  ? {}
+                  : {
+                      afterToolCall: {
+                        nativeItemId: afterToolCall.nativeItemId,
+                        ...(afterToolCall.subagentIds.length === 0
+                          ? {}
+                          : { subagentIds: afterToolCall.subagentIds }),
+                      },
+                    }),
               };
             });
 
@@ -417,14 +483,26 @@ export const layer: Layer.Layer<
           (turn.runAttemptId === null || !rolledBackAttemptIds.has(turn.runAttemptId)),
       );
 
+      // A tool call of the last run still ends that run early.
       const snapshot =
-        runsToRollback.length === 0
-          ? { providerThread }
+        runsToRollback.length === 0 && afterToolCall === null
+          ? { providerThread, providerTurns: [], keptToolCallIds: undefined }
           : yield* session.rollbackThread({
               providerThread,
               target: rollbackTarget,
               providerThreadTurns,
             });
+      // Calls made together with the target keep their results, so they stay in the run too.
+      const kept = new Set(snapshot.keptToolCallIds ?? []);
+      const rewoundAfterOrdinal =
+        afterToolCall === null
+          ? undefined
+          : afterToolCall.runItems.reduce((cut, item) => {
+              const nativeItemId = item.parentItemId === null ? item.nativeItemRef?.nativeId : null;
+              return nativeItemId != null && kept.has(nativeItemId)
+                ? Math.max(cut, item.ordinal)
+                : cut;
+            }, afterToolCall.item.ordinal);
       if (restoreFiles) {
         yield* checkpoints.restore({ targets: restoreTargets, scopes: [scope, ...repositories] });
       }
@@ -453,8 +531,41 @@ export const layer: Layer.Layer<
                 }) as Event,
             );
           const events: Array<OrchestrationV2DomainEvent> = [];
-          // First, so a client that sees the runs rolled back already knows what was left.
-          if (input.requestId !== undefined && unrestorable.length > 0) {
+          if (afterToolCall !== null && rewoundAfterOrdinal !== undefined) {
+            // Read under the lock: a lifecycle write in between must not be overwritten.
+            const run = yield* projections.getRun(input.threadId, afterToolCall.runId);
+            if (run !== undefined) {
+              events.push(
+                yield* makeEvent({
+                  type: "run.updated",
+                  threadId: input.threadId,
+                  runId: run.id,
+                  ...(run.rootNodeId === null ? {} : { nodeId: run.rootNodeId }),
+                  providerInstanceId: run.providerInstanceId,
+                  occurredAt: now,
+                  payload: { ...run, rewoundAfterOrdinal },
+                }),
+              );
+            }
+            // Later rewinds and forks to this run then start from the tool call too.
+            for (const providerTurn of snapshot.providerTurns) {
+              events.push(
+                yield* makeEvent({
+                  type: "provider-turn.updated",
+                  threadId: input.threadId,
+                  driver: providerThread.driver,
+                  providerInstanceId: providerThread.providerInstanceId,
+                  occurredAt: now,
+                  payload: providerTurn,
+                }),
+              );
+            }
+          }
+          // Written even when empty, because the client waits on it to know this request finished.
+          // It follows the cut it reports and precedes the runs rolled back, whose waiter reads
+          // what was left. This row was read before the commit, so placed after the provider
+          // thread it would restore the old activeProviderThreadId.
+          if (input.requestId !== undefined) {
             const thread = yield* projections.getThread(input.threadId);
             events.push(
               yield* makeEvent({

@@ -96,6 +96,10 @@ export interface TimelineRowSharedState {
     | undefined;
   /** Absent hides "Rewind to here", as in the guest view. */
   onRewindToResponse: ((turnCount: number) => void) | undefined;
+  /** Absent hides "Rewind to here" on tool calls. */
+  onRewindToToolCall:
+    | ((input: { readonly turnCount: number; readonly itemId: TurnItemId }) => void)
+    | undefined;
   onToggleTurnFold: (runId: RunId) => void;
   onToggleAttemptFold: (attemptId: RunAttemptId) => void;
   onFileOpen: (attachment: ChatFileAttachment) => void;

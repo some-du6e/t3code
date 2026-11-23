@@ -292,6 +292,8 @@ export const OrchestrationV2ThreadCapabilities = Schema.Struct({
   canForkWhileSourceRunning: Schema.optional(Schema.Boolean),
   canForkFromSubagentThread: Schema.Boolean,
   exposesNativeThreadId: Schema.Boolean,
+  // Roll back to a tool call inside a turn, not only to a turn's end.
+  canRollbackToToolCall: Schema.optional(Schema.Boolean),
 });
 export type OrchestrationV2ThreadCapabilities = typeof OrchestrationV2ThreadCapabilities.Type;
 
@@ -827,6 +829,8 @@ export const OrchestrationV2Run = Schema.Struct({
   workspacePreparation: Schema.optional(OrchestrationV2ThreadLaunchWorkspaceStrategy),
   /** Starts a new provider conversation; earlier runs stay visible but never reach the provider. */
   freshContext: Schema.optional(Schema.Boolean),
+  /** Set by a rewind to one of this run's tool calls: its items after this ordinal left the conversation. */
+  rewoundAfterOrdinal: Schema.optional(NonNegativeInt),
   /** The JSON Schema of the result this run was asked to return as data. */
   outputSchema: Schema.optional(Schema.Record(Schema.String, Schema.Json)),
   /**
@@ -3680,6 +3684,8 @@ export const OrchestrationV2Command = Schema.Union([
     threadId: ThreadId,
     scopeId: CheckpointScopeId,
     checkpointId: CheckpointId,
+    /** A tool call of the checkpoint's run: the conversation then ends after it, not after the run. */
+    afterItemId: Schema.optional(TurnItemId),
   }),
   Schema.Struct({
     type: Schema.Literal("thread.fork"),

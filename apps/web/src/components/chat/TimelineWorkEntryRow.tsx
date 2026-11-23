@@ -39,8 +39,9 @@ import type { ExpandedImagePreview } from "./ExpandedImagePreview";
 import { workGroupImageGallery } from "./markdownImageGallery";
 import { McpSignInAction } from "./McpSignInAction";
 import * as DateTime from "effect/DateTime";
-import { ChevronRightIcon, CircleAlertIcon, XIcon, RotateCcwIcon } from "lucide-react";
+import { ChevronRightIcon, CircleAlertIcon, XIcon, RewindIcon, RotateCcwIcon } from "lucide-react";
 import { Button, InlineButton } from "../ui/button";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { useAssetUrls } from "../../assets/assetUrls";
 import { observeResize } from "../../lib/observeResize";
 import { useThreadShell } from "../../state/entities";
@@ -193,6 +194,50 @@ const toolCallExpandedBodyClassName =
   "max-h-64 cursor-text overflow-auto whitespace-pre-wrap break-words font-mono text-secondary-label text-(length:--font-size-code,var(--text-2xs)) leading-relaxed select-text";
 
 const stopRowToggle = (e: { stopPropagation: () => void }) => e.stopPropagation();
+
+// Revealed with the row's timestamp, so idle rows keep their label space.
+function ToolCallRewindButton({ entry }: { readonly entry: TimelineWorkEntry }) {
+  const { onRewindToToolCall } = use(TimelineRowCtx);
+  const activity = use(TimelineRowActivityCtx);
+  const turnCount = entry.rewindTurnCount;
+  const itemId = entry.projectedItem?.item.id;
+  if (onRewindToToolCall === undefined || turnCount === undefined || itemId === undefined) {
+    return null;
+  }
+  return (
+    // A disabled button lets clicks through to this span; they must not toggle the row.
+    <span
+      className="pointer-events-none absolute flex shrink-0 opacity-0 group-hover/timeline-row:pointer-events-auto group-hover/timeline-row:static group-hover/timeline-row:opacity-100 group-focus-within/timeline-row:pointer-events-auto group-focus-within/timeline-row:static group-focus-within/timeline-row:opacity-100"
+      onClick={stopRowToggle}
+    >
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <Button
+              type="button"
+              size="icon-micro"
+              variant="ghost"
+              disabled={activity.isRevertingCheckpoint || activity.isWorking}
+              onClick={(event) => {
+                event.stopPropagation();
+                onRewindToToolCall({ turnCount, itemId });
+              }}
+              onKeyDown={stopRowToggle}
+              // oxlint-disable-next-line t3code/no-untranslated-copy -- fork-only copy, kept out of the GT catalogs
+              aria-label="Rewind to here"
+            />
+          }
+        >
+          <RewindIcon />
+        </TooltipTrigger>
+        <TooltipPopup side="top">
+          {/* oxlint-disable-next-line t3code/no-untranslated-copy -- fork-only copy, kept out of the GT catalogs */}
+          {"Rewind to here"}
+        </TooltipPopup>
+      </Tooltip>
+    </span>
+  );
+}
 
 export function ReasoningTraceContent({ entries }: { entries: ReadonlyArray<TimelineWorkEntry> }) {
   const ctx = use(TimelineRowCtx);
@@ -634,6 +679,9 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
               timestampFormat={timestampFormat}
             />
           ) : null}
+          {workEntry.rewindTurnCount === undefined ? null : (
+            <ToolCallRewindButton entry={workEntry} />
+          )}
           {createdThread ? (
             <button
               type="button"

@@ -16,18 +16,30 @@ const layer = it.layer(
 const threadId = ThreadId.make("thread-context");
 const forkId = ThreadId.make("thread-context-fork");
 
-const insertAppItem = (itemId: string, runId: string, runStatus: string) =>
+const insertAppItem = (
+  itemId: string,
+  runId: string,
+  runStatus: string,
+  ordinal = 0,
+  runPayload: object = {},
+) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     yield* sql`
       INSERT INTO orchestration_v2_projection_runs
         (run_id, thread_id, ordinal, provider, status, requested_at, payload_json)
-      VALUES (${runId}, ${threadId}, ${runId.length}, 'codex', ${runStatus}, '2026-01-01', '{}')
+      VALUES (
+        ${runId}, ${threadId}, ${runId.length}, 'codex', ${runStatus}, '2026-01-01',
+        ${JSON.stringify(runPayload)}
+      )
     `;
     yield* sql`
       INSERT INTO orchestration_v2_projection_turn_items
         (turn_item_id, thread_id, run_id, ordinal, type, status, updated_at, payload_json)
-      VALUES (${itemId}, ${threadId}, ${runId}, 0, 'dynamic_tool', 'completed', '2026-01-01', '{}')
+      VALUES (
+        ${itemId}, ${threadId}, ${runId}, ${ordinal}, 'dynamic_tool', 'completed', '2026-01-01',
+        '{}'
+      )
     `;
   });
 
@@ -38,6 +50,8 @@ layer("McpAppModelContext", (it) => {
       const store = yield* McpAppModelContext.McpAppModelContext;
       yield* insertAppItem("item-kept", "run-a", "completed");
       yield* insertAppItem("item-rolled-back", "run-bb", "rolled_back");
+      // A rewind to the run's tool call at ordinal 3 removed the app after it.
+      yield* insertAppItem("item-rewound", "run-ccc", "completed", 5, { rewoundAfterOrdinal: 3 });
       const set = (thread: ThreadId, itemId: string, text: string) =>
         store.set({
           threadId: thread,
@@ -48,15 +62,21 @@ layer("McpAppModelContext", (it) => {
         });
       yield* set(threadId, "item-kept", "kept");
       yield* set(threadId, "item-rolled-back", "from a rolled-back run");
+      yield* set(threadId, "item-rewound", "from after a rewind");
       yield* set(threadId, "item-deleted", "from an item that is gone");
 
       yield* set(forkId, "item-kept", "from the fork");
+      yield* set(forkId, "item-rewound", "inherited before the rewind");
       yield* set(forkId, "item-rolled-back", "inherited before the rollback");
 
       const texts = (thread: ThreadId) =>
         store.forThread(thread).pipe(Effect.map((entries) => entries.map((entry) => entry.text)));
       assert.deepEqual(yield* texts(threadId), ["kept"]);
-      assert.deepEqual(yield* texts(forkId), ["from the fork", "inherited before the rollback"]);
+      assert.deepEqual(yield* texts(forkId), [
+        "from the fork",
+        "inherited before the rewind",
+        "inherited before the rollback",
+      ]);
 
       yield* set(threadId, "item-kept", "");
       assert.deepEqual(yield* texts(threadId), []);

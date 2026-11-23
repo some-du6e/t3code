@@ -334,12 +334,17 @@ export function applyOrchestrationV2ProjectionEvent(
     case "run.created":
     case "run.updated": {
       // Lifecycle updates carry the run as it was when the turn started. What the run returned
-      // is written by its own event, and an update without it must not take it away.
+      // is written by its own event, and an update without it must not take it away. Nor may
+      // one without a rewind's cut bring the rewound items back.
       const known = base.runs.find((run) => run.id === event.payload.id);
-      const run =
+      const withOutput =
         event.payload.output === undefined && known?.output !== undefined
           ? { ...event.payload, output: known.output }
           : event.payload;
+      const run =
+        withOutput.rewoundAfterOrdinal === undefined && known?.rewoundAfterOrdinal !== undefined
+          ? { ...withOutput, rewoundAfterOrdinal: known.rewoundAfterOrdinal }
+          : withOutput;
       const next = { ...base, runs: upsertEntity(base.runs, run) };
       const visible = { ...next, visibleTurnItems: activeVisibleTurnItems(next) };
       const wasQueued = known?.status === "queued";

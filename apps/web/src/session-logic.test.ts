@@ -30,6 +30,7 @@ import {
   deriveTimelineEntriesFromVisibleTurnItemsWithState,
   deriveRevertTurnCountByUserMessageId,
   deriveRewindTurnCountByRunId,
+  deriveToolCallRewindTurnCounts,
   derivePhase,
   findRevertCheckpoint,
   isLatestRunSettled,
@@ -564,6 +565,109 @@ describe("V2 session presentation", () => {
           [checkpoint(1), checkpoint(2), checkpoint(3)],
         ),
       ).toEqual({ "run-2": 2 });
+    });
+
+    it("offers finished tool calls of settled runs, never the last entry or inherited ones", () => {
+      const toolCall = (
+        name: string,
+        ordinal: number,
+        overrides: { status?: "running" | "completed" | "failed"; inherited?: boolean } = {},
+      ): TimelineEntry => {
+        const createdAt = `2026-06-20T00:00:0${ordinal}.500Z`;
+        const item: OrchestrationV2TurnItem = {
+          id: TurnItemId.make(`item-${name}`),
+          threadId: ThreadId.make("thread"),
+          runId: runId(ordinal),
+          nodeId: null,
+          providerThreadId: null,
+          providerTurnId: null,
+          nativeItemRef: {
+            driver: "claudeAgent" as never,
+            nativeId: `toolu-${name}`,
+            strength: "weak",
+          },
+          parentItemId: null,
+          ordinal: ordinal * 100 + 1,
+          status: overrides.status ?? "completed",
+          title: null,
+          startedAt: null,
+          completedAt: null,
+          updatedAt: DateTime.makeUnsafe(createdAt),
+          type: "command_execution",
+          input: name,
+        };
+        return {
+          id: name,
+          kind: "work",
+          createdAt,
+          entry: {
+            id: name,
+            createdAt,
+            runId: runId(ordinal),
+            itemType: "command_execution",
+            label: name,
+            tone: "tool",
+            projectedItem: {
+              visibility: overrides.inherited === true ? "inherited" : "local",
+              sourceThreadId: item.threadId,
+              sourceItemId: item.id,
+              position: 0,
+              item,
+            },
+          },
+        };
+      };
+      const checkpoints = [checkpoint(1), checkpoint(2), checkpoint(3)];
+      const toolTargets = (
+        timelineEntries: ReadonlyArray<TimelineEntry>,
+        options: { unsettledRunId?: RunId } = {},
+      ) =>
+        Object.fromEntries(
+          deriveToolCallRewindTurnCounts({
+            timelineEntries,
+            checkpoints,
+            unsettledRunId: options.unsettledRunId ?? null,
+          }),
+        );
+
+      expect(
+        toolTargets([
+          toolCall("inherited", 1, { inherited: true }),
+          ...turn(1),
+          toolCall("pwd", 2),
+          toolCall("failed", 2, { status: "failed" }),
+          toolCall("running", 2, { status: "running" }),
+          ...turn(2),
+          toolCall("last", 3),
+        ]),
+      ).toEqual({ pwd: 2, failed: 2 });
+      // A tool call of the run still working offers nothing.
+      expect(
+        toolTargets([...turn(1), toolCall("pwd", 2), ...turn(2)], { unsettledRunId: runId(2) }),
+      ).toEqual({});
+      // Claude no longer reads the calls before a compaction.
+      const compaction: TimelineEntry = {
+        id: "compaction",
+        kind: "work",
+        createdAt: "2026-06-20T00:00:02.700Z",
+        entry: {
+          id: "compaction",
+          createdAt: "2026-06-20T00:00:02.700Z",
+          runId: runId(2),
+          itemType: "compaction",
+          label: "Context compacted",
+          tone: "info",
+        },
+      };
+      expect(
+        toolTargets([
+          ...turn(1),
+          toolCall("before", 2),
+          compaction,
+          toolCall("after", 2),
+          ...turn(2),
+        ]),
+      ).toEqual({ after: 2 });
     });
 
     it("counts a notification-only wake run as a later turn, but not unrelated work", () => {

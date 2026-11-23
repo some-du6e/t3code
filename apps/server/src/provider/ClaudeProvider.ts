@@ -100,6 +100,8 @@ const CLAUDE_PRESENTATION = {
   displayName: "Claude",
   showInteractionModeToggle: true,
   reportsContextWindow: true,
+  // Clients then offer Rewind to here on tool calls; older servers never send it.
+  supportsToolCallRollback: true,
 } as const;
 function toTitleCaseWords(value: string): string {
   const parts: Array<string> = [];

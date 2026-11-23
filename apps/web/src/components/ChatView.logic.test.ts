@@ -1209,6 +1209,52 @@ describe("waitForRevertedMessage", () => {
     }
   });
 
+  it("finishes a repeated tool call rewind once its request is recorded", async () => {
+    vi.useFakeTimers();
+    const { state, projection } = projectionAtom();
+    const cut = {
+      ...projection,
+      runs: projection.runs.map((run) =>
+        run.ordinal === 4 ? { ...run, rewoundAfterOrdinal: 403 } : run,
+      ),
+    };
+    appAtomRegistry.set(state, { data: Option.some(cut) });
+    let outcome = "pending";
+    const waiting = waitForRevertedMessage(
+      threadRef,
+      4,
+      requestId,
+      async () => {},
+      undefined,
+      true,
+    ).then(
+      () => {
+        outcome = "reverted";
+      },
+      (error: Error) => {
+        outcome = error.message;
+      },
+    );
+
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(outcome).toBe("pending");
+
+      appAtomRegistry.set(state, {
+        data: Option.some({
+          ...cut,
+          thread: { ...cut.thread, rollbackUnrestored: { requestId, repositories: [] } },
+        }),
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(outcome).toBe("reverted");
+      await waiting;
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
   it("rejects a stale edit already rewound by another client during attachment preparation", async () => {
     vi.useFakeTimers();
     const { state, projection } = projectionAtom();

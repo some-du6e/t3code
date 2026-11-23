@@ -507,7 +507,7 @@ export function createEnvironmentThreadDetailAtoms<E>(
   const checkpointSummariesAtomFamily = Atom.family((key: string) => {
     let previous: Pick<
       OrchestrationV2ThreadProjection,
-      "checkpoints" | "checkpointScopes" | "messages"
+      "checkpoints" | "checkpointScopes" | "messages" | "runs"
     > | null = null;
     let value = EMPTY_CHECKPOINT_SUMMARIES;
     return Atom.make((get) => {
@@ -518,11 +518,19 @@ export function createEnvironmentThreadDetailAtoms<E>(
       } else if (
         projection.checkpoints !== previous?.checkpoints ||
         projection.checkpointScopes !== previous?.checkpointScopes ||
-        projection.messages !== previous?.messages
+        projection.messages !== previous?.messages ||
+        // Runs, not the rows that move on every delta: a rewind's run.updated also hides its rows.
+        projection.runs !== previous?.runs
       ) {
-        const { checkpoints, checkpointScopes, messages } = projection;
-        const next = deriveThreadCheckpointSummaries({ checkpoints, checkpointScopes, messages });
-        // The same checkpoints give the same summaries; messages only pick each assistant message.
+        const { checkpoints, checkpointScopes, messages, runs, visibleTurnItems } = projection;
+        const next = deriveThreadCheckpointSummaries({
+          checkpoints,
+          checkpointScopes,
+          messages,
+          runs,
+          visibleTurnItems,
+        });
+        // The same checkpoints give the same summaries; messages and runs only pick each answer.
         if (
           checkpoints !== previous?.checkpoints ||
           checkpointScopes !== previous?.checkpointScopes ||
@@ -531,7 +539,7 @@ export function createEnvironmentThreadDetailAtoms<E>(
           )
         )
           value = next;
-        previous = { checkpoints, checkpointScopes, messages };
+        previous = { checkpoints, checkpointScopes, messages, runs };
       }
       return value;
     }).pipe(Atom.setIdleTTL(0), Atom.withLabel(`environment-thread-checkpoint-summaries:${key}`));

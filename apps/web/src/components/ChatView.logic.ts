@@ -938,10 +938,14 @@ export async function waitForRevertedMessage(
   requestId: CommandId,
   revert: () => Promise<void>,
   timeoutMs = 120_000,
+  /** The rewind ends run `turnCount` at one of its tool calls instead of after it. */
+  toolCall = false,
 ): Promise<ReadonlyArray<string>> {
   const threadAtom = environmentThreadDetails.stateAtom(threadRef);
   const readProjection = () => Option.getOrNull(appAtomRegistry.get(threadAtom).data);
   const initial = readProjection();
+  const cutRun = (thread: typeof initial) =>
+    thread?.runs.find((run) => run.ordinal === turnCount && run.status !== "rolled_back");
   const providerThreadId = initial?.thread.activeProviderThreadId;
   const initialProviderThread = initial?.providerThreads.find(
     (providerThread) => providerThread.id === providerThreadId,
@@ -959,7 +963,8 @@ export async function waitForRevertedMessage(
       return latest;
     return latest === undefined || run.ordinal > latest.ordinal ? run : latest;
   }, undefined);
-  if (witness === undefined) {
+  // A tool call of the last run removes only the rest of that run.
+  if (witness === undefined && (!toolCall || cutRun(initial) === undefined)) {
     throw new Error(m(msg("The thread has changed. Select a message to rewind again.")));
   }
   return new Promise<ReadonlyArray<string>>((resolve, reject) => {
@@ -997,7 +1002,12 @@ export async function waitForRevertedMessage(
                 !initialProviderThreadIds.has(providerThread.id))) &&
             providerThread.lastRunOrdinal === (turnCount === 0 ? null : turnCount),
         ) &&
-        thread.runs.some((run) => run.id === witness.id && run.status === "rolled_back")
+        (witness === undefined ||
+          thread.runs.some((run) => run.id === witness.id && run.status === "rolled_back")) &&
+        // A repeated cut commits nothing new except this request's marker.
+        (!toolCall ||
+          (thread.thread.rollbackUnrestored?.requestId === requestId &&
+            cutRun(thread)?.rewoundAfterOrdinal !== undefined))
       )
         finish();
     };

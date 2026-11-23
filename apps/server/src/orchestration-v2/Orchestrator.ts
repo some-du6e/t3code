@@ -14493,6 +14493,23 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           capabilities,
         }),
       );
+      if (command.afterItemId !== undefined) {
+        // Only the run's end has a file snapshot, so a tool call is a conversation rewind.
+        if (command.restoreFiles !== false) {
+          return yield* new OrchestratorDispatchError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause: "A rewind to a tool call keeps the files as they are.",
+          });
+        }
+        if (capabilities.threads.canRollbackToToolCall !== true) {
+          return yield* new OrchestratorDispatchError({
+            commandId: command.commandId,
+            commandType: command.type,
+            cause: "This provider can only rewind to the end of a response.",
+          });
+        }
+      }
 
       const targetCheckpoint = projection.checkpoints.find(
         (candidate) => candidate.id === command.checkpointId,
@@ -14666,6 +14683,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             providerThreadId: providerThread.id,
             checkpointId: targetCheckpoint.id,
             scopeId: targetScope.id,
+            ...(command.afterItemId === undefined ? {} : { afterItemId: command.afterItemId }),
           },
         } satisfies PendingOrchestrationEffectV2,
       ]);

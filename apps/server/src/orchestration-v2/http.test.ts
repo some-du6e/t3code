@@ -116,6 +116,24 @@ const rolledBackRun = Schema.decodeSync(OrchestrationV2Run)({
   checkpointId: null,
   contextHandoffId: null,
 });
+const rewoundRun = Schema.decodeSync(OrchestrationV2Run)({
+  id: "run:rewound",
+  threadId: "source-thread",
+  ordinal: 2,
+  providerInstanceId: "codex",
+  modelSelection: { instanceId: "codex", model: "gpt-5.4" },
+  providerThreadId: null,
+  userMessageId: "message:rewound",
+  rootNodeId: null,
+  activeAttemptId: null,
+  status: "completed",
+  requestedAt: now,
+  startedAt: now,
+  completedAt: now,
+  checkpointId: null,
+  contextHandoffId: null,
+  rewoundAfterOrdinal: 199,
+});
 
 // Serves the orchestration HTTP routes over real stores; `allowed` gates the read scope.
 const serveOrchestrationHttp = (allowed: () => boolean) =>
@@ -332,6 +350,30 @@ it.effect("exports full history with size, scope, and missing-thread checks", ()
     expect(withoutRolledBackRun.status).toBe(200);
     expect(
       (yield* decodeTranscript(yield* Effect.promise(() => withoutRolledBackRun.json()))).items,
+    ).toHaveLength(199);
+    // Nor can a row that a rewind to an earlier tool call of its run removed.
+    yield* eventSink.write({
+      events: [
+        {
+          id: EventId.make("create-rewound-run"),
+          type: "run.created",
+          threadId: thread.id,
+          occurredAt: now,
+          payload: rewoundRun,
+        },
+      ],
+    });
+    yield* sql`
+      UPDATE orchestration_v2_projection_turn_items SET run_id = ${rewoundRun.id}, ordinal = 200
+      WHERE turn_item_id = ${commandItemId}
+    `;
+    yield* setCommandPayload(
+      sql`json_set(payload_json, '$.runId', ${rewoundRun.id}, '$.ordinal', 200)`,
+    );
+    const withoutRewoundRow = yield* read(thread.id);
+    expect(withoutRewoundRow.status).toBe(200);
+    expect(
+      (yield* decodeTranscript(yield* Effect.promise(() => withoutRewoundRow.json()))).items,
     ).toHaveLength(199);
 
     expect((yield* read(ThreadId.make("missing"))).status).toBe(404);

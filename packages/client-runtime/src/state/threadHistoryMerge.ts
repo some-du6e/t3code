@@ -3,7 +3,10 @@ import type {
   OrchestrationV2Subagent,
   OrchestrationV2ThreadProjection,
 } from "@t3tools/contracts";
-import { isOrchestrationV2TurnItemVisible } from "@t3tools/shared/orchestrationV2Timeline";
+import {
+  isOrchestrationV2RewoundAway,
+  isOrchestrationV2TurnItemVisible,
+} from "@t3tools/shared/orchestrationV2Timeline";
 
 export type ThreadHistoryMeta = {
   readonly historyCursor: string | null;
@@ -102,9 +105,7 @@ export function mergeOlderHistoryIntoProjection(
   const currentByKey = new Map(
     projection.visibleTurnItems.map((row) => [projectedItemKey(row), row]),
   );
-  const rolledBackRuns = new Set(
-    projection.runs.filter((run) => run.status === "rolled_back").map((run) => run.id),
-  );
+  const runById = new Map(projection.runs.map((run) => [run.id, run]));
   const turnItemById = new Map(projection.turnItems.map((item) => [String(item.id), item]));
   const pageKeys = new Set<string>();
   const page: OrchestrationV2ProjectedTurnItem[] = [];
@@ -143,8 +144,13 @@ export function mergeOlderHistoryIntoProjection(
           continue;
         row = { ...row, item: currentItem };
       }
-      // A rollback can arrive before a history page for rows outside the loaded window.
-      if (row.item.runId !== null && rolledBackRuns.has(row.item.runId)) continue;
+      // A rollback or rewind can arrive before a history page for rows outside the loaded window.
+      const run = row.item.runId === null ? undefined : runById.get(row.item.runId);
+      if (
+        run?.status === "rolled_back" ||
+        isOrchestrationV2RewoundAway(run?.rewoundAfterOrdinal, row.item)
+      )
+        continue;
     }
     pageKeys.add(key);
     page.push(row);

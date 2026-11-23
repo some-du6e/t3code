@@ -42,6 +42,30 @@ describe.each([
   });
 
   it.each([
+    { type: "command_execution", itemRunId: runId, ordinal: 103, visible: true },
+    { type: "reasoning", itemRunId: runId, ordinal: 104, visible: false },
+    { type: "assistant_message", itemRunId: runId, ordinal: 105, visible: false },
+    // The files the run changed are still on disk, so its changed-files card stays.
+    { type: "checkpoint", itemRunId: runId, ordinal: 198, visible: true },
+    { type: "assistant_message", itemRunId: otherRunId, ordinal: 205, visible: true },
+  ] as const)(
+    "after a rewind to the tool call at 103, shows $type $ordinal: $visible",
+    ({ type, itemRunId, ordinal, visible }) => {
+      expect(
+        isVisible({
+          item: { type, runId: itemRunId, nodeId, ordinal },
+          runs: [
+            { id: runId, status: "completed", rewoundAfterOrdinal: 103 },
+            { id: otherRunId, status: "completed" },
+          ],
+          attempts: [],
+          items: [],
+        }),
+      ).toBe(visible);
+    },
+  );
+
+  it.each([
     { status: "running", visible: true },
     { status: "cancelled", visible: true },
     { status: "rolled_back", visible: false },

@@ -222,7 +222,9 @@ export const messageHitsQuery = (
   { match, substrings, shortSpellings, projectId, excludedThreadIds }: typeof SearchRequest.Encoded,
 ) => sql`
     WITH eligible AS MATERIALIZED (
-      SELECT threads.thread_id, threads.project_id
+      SELECT threads.thread_id, threads.project_id,
+        -- A thread records a rewind's request before the rewind cuts one of its runs.
+        json_extract(threads.payload_json, '$.rollbackRequestId') IS NOT NULL AS rewound
       FROM orchestration_v2_projection_threads AS threads
       INNER JOIN projection_projects AS projects
         ON projects.project_id = threads.project_id
@@ -280,8 +282,9 @@ export const messageHitsQuery = (
       -- Answers to an agent's question show inside its question card, where
       -- neither find nor a jump can reach them.
       AND messages.message_id NOT LIKE 'async-answer:%'
-      -- Nor can they reach a rolled-back turn, or a message of a stopped turn
-      -- that no shown item carries, such as a queued prompt that never ran.
+      -- Nor can they reach a rolled-back turn, a message of a stopped turn
+      -- that no shown item carries, such as a queued prompt that never ran,
+      -- or one that a rewind to an earlier tool call of its turn removed.
       AND NOT EXISTS (
         SELECT 1 FROM orchestration_v2_projection_runs AS runs
         WHERE runs.run_id = messages.run_id
@@ -294,6 +297,16 @@ export const messageHitsQuery = (
                 WHERE items.run_id = runs.run_id
                   AND json_extract(items.payload_json, '$.messageId') = messages.message_id
                   AND json_extract(items.payload_json, '$.inputIntent') IS NOT 'queued_turn'
+              )
+            )
+            OR (
+              eligible.rewound
+              AND json_extract(runs.payload_json, '$.rewoundAfterOrdinal') IS NOT NULL
+              AND NOT EXISTS (
+                SELECT 1 FROM orchestration_v2_projection_turn_items AS items
+                WHERE items.run_id = runs.run_id
+                  AND items.ordinal <= json_extract(runs.payload_json, '$.rewoundAfterOrdinal')
+                  AND json_extract(items.payload_json, '$.messageId') = messages.message_id
               )
             )
           )

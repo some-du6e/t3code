@@ -350,6 +350,8 @@ export class ProviderAdapterRollbackThreadError extends Schema.TaggedError<Provi
     driver: ProviderDriverKind,
     providerThreadId: ProviderThreadId,
     checkpointId: Schema.optional(CheckpointId),
+    /** The rollback target is no longer in the provider's saved conversation; retrying cannot help. */
+    reason: Schema.optional(Schema.Literal("target-unavailable")),
     cause: Schema.optional(Schema.Defect()),
   },
 ) {
@@ -628,6 +630,11 @@ export interface ProviderAdapterV2ThreadSnapshot {
   readonly reasoningMessageIds?: ReadonlyArray<OrchestrationV2ConversationMessage["id"]>;
   readonly runtimeRequests: ReadonlyArray<OrchestrationV2RuntimeRequest>;
   readonly providerPayload?: unknown;
+  /**
+   * After a rollback to a tool call: the native ids of the items the conversation kept, its tool
+   * calls and the subagents they launched. Calls made with the target keep their results too.
+   */
+  readonly keptToolCallIds?: ReadonlyArray<string>;
 }
 
 export interface ProviderAdapterV2ReadThreadSnapshotInput {
@@ -646,6 +653,12 @@ export type ProviderAdapterV2RollbackTarget =
       readonly appRunOrdinal: number;
       readonly providerTurn: OrchestrationV2ProviderTurn;
       readonly message?: Pick<OrchestrationV2ConversationMessage, "role" | "text" | "attachments">;
+      /** Ends the conversation after this tool call of the turn. Sent only with `canRollbackToToolCall`. */
+      readonly afterToolCall?: {
+        readonly nativeItemId: string;
+        /** Native ids of the turn's subagents shown after the call; kept when a kept call launched them. */
+        readonly subagentIds?: ReadonlyArray<string>;
+      };
     };
 
 export interface ProviderAdapterV2RollbackThreadInput {

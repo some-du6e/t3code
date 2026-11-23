@@ -1,5 +1,7 @@
 import { assert, it } from "@effect/vitest";
 import {
+  CheckpointId,
+  CheckpointScopeId,
   ContextTransferId,
   MessageId,
   ProjectId,
@@ -300,4 +302,97 @@ it.effect("inherited history stops at a missing fork ancestor", () =>
     );
     assert.deepEqual(items, []);
   }),
+);
+
+it.effect("leaves what a rewind to a tool call removed out of a provider handoff", () =>
+  Effect.gen(function* () {
+    const now = DateTime.makeUnsafe("2026-01-01T00:00:00.000Z");
+    const threadId = ThreadId.make("thread:rewound");
+    const runId = RunId.make("run:rewound");
+    const claude = ProviderInstanceId.make("claude");
+    const checkpointId = CheckpointId.make("checkpoint:rewound");
+    const fields = (name: string, ordinal: number) => ({
+      id: TurnItemId.make(`turn-item:${name}`),
+      threadId,
+      runId,
+      nodeId: null,
+      providerThreadId: null,
+      providerTurnId: null,
+      nativeItemRef: null,
+      parentItemId: null,
+      ordinal,
+      status: "completed" as const,
+      title: null,
+      startedAt: now,
+      completedAt: now,
+      updatedAt: now,
+    });
+    const service = yield* ContextHandoffService.ContextHandoffServiceV2;
+    const handoff = yield* service.prepareProviderHandoff({
+      threadId,
+      targetRunId: RunId.make("run:after-rewind"),
+      transferId: null,
+      fromProviderThreadIds: [],
+      toProviderThreadId: ProviderThreadId.make("provider-thread:codex"),
+      fromProviderInstanceId: claude,
+      toProviderInstanceId: ProviderInstanceId.make("codex"),
+      coveredRunOrdinals: { from: 3, to: 3 },
+      runs: [
+        {
+          id: runId,
+          threadId,
+          ordinal: 3,
+          providerInstanceId: claude,
+          modelSelection: { instanceId: claude, model: "claude-sonnet-4-6" },
+          providerThreadId: null,
+          userMessageId: MessageId.make("message:prompt"),
+          rootNodeId: null,
+          activeAttemptId: null,
+          status: "completed",
+          requestedAt: now,
+          startedAt: now,
+          completedAt: now,
+          checkpointId,
+          contextHandoffId: null,
+          rewoundAfterOrdinal: 301,
+        },
+      ],
+      strategy: "full_thread_summary",
+      items: [
+        {
+          ...fields("prompt", 300),
+          type: "user_message",
+          createdBy: "user",
+          creationSource: "server",
+          messageId: MessageId.make("message:prompt"),
+          inputIntent: "turn_start",
+          text: "Look around, then clean up.",
+          attachments: [],
+        },
+        { ...fields("ls", 301), type: "command_execution", input: "ls" },
+        { ...fields("rm", 302), type: "command_execution", input: "rm -rf build" },
+        {
+          ...fields("answer", 303),
+          type: "assistant_message",
+          messageId: MessageId.make("message:answer"),
+          text: "Done, I removed build/",
+          streaming: false,
+        },
+        {
+          ...fields("files", 398),
+          type: "checkpoint",
+          checkpointId,
+          scopeId: CheckpointScopeId.make("scope:rewound"),
+          files: [],
+        },
+      ],
+      createdAt: now,
+    });
+
+    assert.deepStrictEqual(
+      handoff.history?.messages.map((message) => message.itemId),
+      [TurnItemId.make("turn-item:prompt"), TurnItemId.make("turn-item:ls")],
+    );
+    assert.notInclude(handoff.summaryText, "removed build");
+  }).pipe(Effect.provide(layerTest)),
 );
