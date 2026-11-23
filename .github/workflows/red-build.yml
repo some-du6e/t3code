@@ -7,7 +7,8 @@ name: Red build
 
 on:
   push:
-    branches: [red]
+    # red-* branches get the checks and builds but no release.
+    branches: [red, "red-*"]
   workflow_dispatch:
 
 concurrency:
@@ -110,10 +111,26 @@ jobs:
           fi
 
       - name: Check the fork's changes
+        id: check_changed
         env:
           # 40 minutes per step on these 4-vCPU runners, not the default 15.
           CHECK_CHANGED_TIMEOUT: "2400"
         run: vp run check:changed upstream/main
+
+      # A parallel typecheck task that fails prints nothing there; one at a time, each shows why.
+      # Packages check:changed already passed replay from the cache.
+      - name: Show typecheck failures
+        if: ${{ failure() && steps.check_changed.outcome == 'failure' }}
+        run: |
+          for dir in apps/* packages/* infra/* scripts; do
+            grep -qs '"typecheck"' "$dir/package.json" || continue
+            echo "::group::typecheck $dir"
+            status=0
+            vp run --filter "./$dir" typecheck > "$RUNNER_TEMP/typecheck.txt" 2>&1 || status=$?
+            grep -v -e "TS377141" -e "^\s*[0-9]* .*Schema.TaggedError" -e "^\s*~*\s*$" "$RUNNER_TEMP/typecheck.txt" | tail -80
+            echo "exit $status"
+            echo "::endgroup::"
+          done
 
       - name: Check i18n catalogs
         run: vp run i18n:check
